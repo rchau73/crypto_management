@@ -1,0 +1,7 @@
+symbol,group,target_percent,current_quantity
+USDT,Caixa,30,1200
+BTC,Holding,10,0.75
+ETH,Holding,10,2.5
+SOL,Trading,5,10
+ETH,Trading,15,2
+DOGE,Trading,2,1000
