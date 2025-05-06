@@ -1,0 +1,11 @@
+market,group,target_percent
+BullMarket,Base,50.00
+BullMarket,Altcoins,15.00
+BullMarket,RendaPassiva,15.00
+BullMarket,Caixa,15.00
+BullMarket,Aprender,1.00
+BearMarket,Base,30.00
+BearMarket,Altcoins,0.00
+BearMarket,RendaPassiva,45.00
+BearMarket,Caixa,25.00
+BearMarket,Aprender,0.00
