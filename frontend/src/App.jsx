@@ -27,6 +27,12 @@ const darkTheme = createTheme({
 
 const COLORS = ["#8884d8", "#82ca9d", "#ffc658", "#ff8042", "#00C49F", "#FFBB28", "#d72660", "#3f88c5", "#f49d37", "#140f2d"];
 
+// Helper for formatting numbers as 999,999.99
+function formatNumber(n) {
+  if (typeof n !== "number" || isNaN(n)) return "-";
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function App() {
   const [allocations, setAllocations] = useState([]);
   const [groupAllocations, setGroupAllocations] = useState([]);
@@ -40,7 +46,7 @@ function App() {
   const [barcaFilter, setBarcaFilter] = useState("");
 
   const [page, setPage] = useState(1);
-  const pageSize = 20;
+  const pageSize = 10;
 
   const fetchAllocations = async () => {
     setLoading(true);
@@ -106,9 +112,12 @@ function App() {
     (barcaFilter === "" || row.barca === barcaFilter)
   );
 
-  // Pagination logic (apply to filteredAllocations)
-  const totalPages = Math.ceil(filteredAllocations.length / pageSize);
-  const paginatedAllocations = filteredAllocations.slice((page - 1) * pageSize, page * pageSize);
+  // Sort by Value (descending)
+  const sortedAllocations = [...filteredAllocations].sort((a, b) => b.value - a.value);
+
+  // Pagination logic (apply to sortedAllocations)
+  const totalPages = Math.ceil(sortedAllocations.length / pageSize);
+  const paginatedAllocations = sortedAllocations.slice((page - 1) * pageSize, page * pageSize);
 
   // Reset to page 1 whenever a filter changes
   React.useEffect(() => {
@@ -191,11 +200,11 @@ function App() {
                       <TableCell sx={{ fontSize: 10 }}>{row.symbol}</TableCell>
                       <TableCell sx={{ fontSize: 10 }}>{row.group}</TableCell>
                       <TableCell sx={{ fontSize: 10 }}>{row.barca}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>${row.price}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>{row.current_quantity}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>${row.value.toFixed(2)}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>{row.target_percent}%</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>{row.current_percent.toFixed(2)}%</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.price)}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.current_quantity)}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>${formatNumber(row.value)}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.target_percent)}%</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.current_percent)}%</TableCell>
                       <TableCell
                         align="right"
                         sx={{
@@ -206,7 +215,7 @@ function App() {
                         }}
                       >
                         {row.deviation > 0 ? "+" : ""}
-                        {row.deviation.toFixed(2)}%
+                        {formatNumber(row.deviation)}%
                       </TableCell>
                     </TableRow>
                   ))}
@@ -260,8 +269,8 @@ function App() {
                   {groupAllocations.map((g, idx) => (
                     <TableRow key={idx}>
                       <TableCell sx={{ fontSize: 10 }}>{g.group}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>${g.value?.toFixed(2) ?? "0.00"}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>{g.current_percent.toFixed(2)}%</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>${formatNumber(g.value)}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(g.current_percent)}%</TableCell>
                       <TableCell
                         align="right"
                         sx={{
@@ -271,7 +280,7 @@ function App() {
                         }}
                       >
                         {g.deviation > 0 ? "+" : ""}
-                        {g.deviation.toFixed(2)}%
+                        {formatNumber(g.deviation)}%
                       </TableCell>
                     </TableRow>
                   ))}
@@ -300,8 +309,8 @@ function App() {
                   {barcaActualAllocations.map((b, idx) => (
                     <TableRow key={idx}>
                       <TableCell sx={{ fontSize: 10 }}>{b.barca}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>${b.value?.toFixed(2) ?? "0.00"}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 10 }}>{b.current_percent?.toFixed(2) ?? "0.00"}%</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>${formatNumber(b.value)}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(b.current_percent)}%</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

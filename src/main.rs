@@ -150,43 +150,47 @@ async fn api_allocations() -> Json<serde_json::Value> {
         .map(|c| (c.symbol.clone(), c))
         .collect();
 
-    let mut asset_values: HashMap<(String, String), f64> = HashMap::new();
+    let mut asset_values: HashMap<(String, String, String), (f64, f64)> = HashMap::new(); // (value, quantity)
     let mut total_wallet_value = 0.0;
 
-    // Aggregate by (symbol, group)
     for alloc in &allocations {
         if let Some(crypto) = crypto_map.get(&alloc.symbol) {
             let price = crypto.quote.usd.price;
             let value = alloc.current_quantity * price;
+            let key = (alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone());
             asset_values
-                .entry((alloc.symbol.clone(), alloc.group.clone()))
-                .and_modify(|v| *v += value)
-                .or_insert(value);
+                .entry(key)
+                .and_modify(|(v, q)| {
+                    *v += value;
+                    *q += alloc.current_quantity;
+                })
+                .or_insert((value, alloc.current_quantity));
             total_wallet_value += value;
         }
     }
 
-    // Per-asset allocation (by symbol+group)
-    let per_asset: Vec<_> = allocations.iter().map(|alloc| {
-        let price = crypto_map.get(&alloc.symbol).map(|c| c.quote.usd.price).unwrap_or(0.0);
-        let value = asset_values
-            .get(&(alloc.symbol.clone(), alloc.group.clone()))
-            .copied()
-            .unwrap_or(0.0);
-        let current_percent = if total_wallet_value > 0.0 {
-            (value / total_wallet_value) * 100.0
+    // Build per_asset table: one row per unique (symbol, group, barca)
+    let per_asset: Vec<_> = asset_values.iter().map(|((symbol, group, barca), (value, quantity))| {
+        let price = crypto_map.get(symbol).map(|c| c.quote.usd.price).unwrap_or(0.0);
+        let target_percent = allocations
+            .iter()
+            .filter(|a| &a.symbol == symbol && &a.group == group && &a.barca == barca)
+            .map(|a| a.target_percent)
+            .sum::<f64>();
+        let current_percent = if total_wallet_value != 0.0 {
+            (*value / total_wallet_value) * 100.0
         } else {
             0.0
         };
-        let deviation = current_percent - alloc.target_percent;
+        let deviation = current_percent - target_percent;
         json!({
-            "symbol": alloc.symbol,
-            "group": alloc.group,
-            "barca": alloc.barca, // <-- Add this line!
+            "symbol": symbol,
+            "group": group,
+            "barca": barca,
             "price": price,
-            "current_quantity": alloc.current_quantity,
+            "current_quantity": quantity,
             "value": value,
-            "target_percent": alloc.target_percent,
+            "target_percent": target_percent,
             "current_percent": current_percent,
             "deviation": deviation
         })
@@ -196,7 +200,7 @@ async fn api_allocations() -> Json<serde_json::Value> {
     let mut group_values: HashMap<String, f64> = HashMap::new();
     for alloc in &allocations {
         let group = &alloc.group;
-        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone())).copied().unwrap_or(0.0);
+        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone())).copied().unwrap_or((0.0, 0.0)).0;
         *group_targets.entry(group.clone()).or_insert(0.0) += alloc.target_percent;
         *group_values.entry(group.clone()).or_insert(0.0) += value;
     }
@@ -211,7 +215,7 @@ async fn api_allocations() -> Json<serde_json::Value> {
     // Calculate group actual values (already correct)
     let mut group_values: HashMap<String, f64> = HashMap::new();
     for alloc in &allocations {
-        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone())).copied().unwrap_or(0.0);
+        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone())).copied().unwrap_or((0.0,0.0)).0;
         *group_values.entry(alloc.group.clone()).or_insert(0.0) += value;
     }
 
@@ -244,7 +248,7 @@ async fn api_allocations() -> Json<serde_json::Value> {
     let mut barca_values: HashMap<String, f64> = HashMap::new();
     for alloc in &allocations {
         let barca = &alloc.barca;
-        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone())).copied().unwrap_or(0.0);
+        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone())).copied().unwrap_or((0.0,0.0)).0;
         *barca_values.entry(barca.clone()).or_insert(0.0) += value;
     }
 
@@ -270,9 +274,9 @@ async fn api_allocations() -> Json<serde_json::Value> {
         // Make sure you have barca in your WalletAllocation struct and CSV!
         let barca = alloc.barca.clone();
         let value = asset_values
-            .get(&(alloc.symbol.clone(), alloc.group.clone()))
+            .get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone()))
             .copied()
-            .unwrap_or(0.0);
+            .unwrap_or((0.0,0.0)).0;
         *barca_actual_values.entry(barca).or_insert(0.0) += value;
     }
 
