@@ -93,6 +93,17 @@ struct BarcaAllocation {
     target_percent: f64,
 }
 
+#[derive(Deserialize)]
+struct Allocation {
+    symbol: String,
+    group: String,
+    barca: String,
+    target_percent: f64,
+    current_quantity: f64,
+    #[serde(default)]
+    comments: Option<String>, // This will be ignored in all calculations
+}
+
 fn read_barca_allocations(path: &str, current_market: &str) -> Result<HashMap<String, f64>, Box<dyn Error>> {
     let mut rdr = csv::ReaderBuilder::new().trim(csv::Trim::All).from_path(path)?;
     let mut barca_targets = HashMap::new();

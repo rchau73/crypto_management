@@ -2,3 +2,4 @@
 .env
 crypto_quotes.csv
 wallet_allocations.csv
+*.bkp
