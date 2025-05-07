@@ -1,4 +1,5 @@
 symbol,group,barca,target_percent,current_quantity
+USDT,Holding,Base,30,7217
 USDT,Holding,Caixa,20,1.33662016
 AAVE,Holding,Altcoins,1,15.39511
 ADA,Holding,Altcoins,0.5,3882.90300017
@@ -9,11 +10,11 @@ Aurora,Holding,Altcoins,0,0
 BGB,Holding,Altcoins,0,0
 BLOCK,Holding,Altcoins,0.2,18524.6800592
 BLOCKAsset,Holding,Altcoins,0.1,2933.1127298
-BTC,Holding,Base,55,1.13418934
+BTC,Holding,Base,55,1.04502
 CKB,Holding,Altcoins,0.5,191559.01348553
 DOT,Holding,Altcoins,1,638.54793
 DYDX,Holding,Altcoins,0.5,772.83772556
-ETH,Holding,Altcoins,10,11.0035806
+ETH,Holding,Altcoins,10,8.89223
 FET,Holding,Altcoins,1,2992.57173221
 S,Holding,Altcoins,0.2,1079.7163588
 GALA,Holding,Altcoins,0.2,21340.25
@@ -90,6 +91,8 @@ VIRTUAL,Trading,Altcoins,2,0
 XRD,Trading,Altcoins,1,13082.81147
 ZIL,Trading,Altcoins,1,16770.287
 USDT,DeFi,Caixa,0,2064.71
-USDT,DeFi,RendaPassiva,-25,-1221.00
-SOL,DeFi,RendaPassiva,55,28.50
-USDT,DeFi,RendaPassiva,30,1821.00
+SOL,DeFi,RendaPassiva,60,28.50
+USDT,DeFi,RendaPassiva,0,-1221.00
+USDT,DeFi,RendaPassiva,40,1710.6947
+BTC,DeFi,RendaPassiva,0,0.0785
+ETH,DeFi,RendaPassiva,0,0.19995824
