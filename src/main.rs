@@ -230,6 +230,12 @@ async fn api_allocations() -> Json<serde_json::Value> {
         *group_values.entry(alloc.group.clone()).or_insert(0.0) += value;
     }
 
+    // 1. Fix per_group aggregation: aggregate by group only, not by (symbol, group, barca)
+    let mut group_values: HashMap<String, f64> = HashMap::new();
+    for ((_, group, _), (value, _quantity)) in &asset_values {
+        *group_values.entry(group.clone()).or_insert(0.0) += *value;
+    }
+
     // Build per_group table
     let per_group: Vec<_> = group_values.iter().map(|(group, group_value)| {
         let group_target_value = group_target_values.get(group).copied().unwrap_or(0.0);
@@ -263,6 +269,12 @@ async fn api_allocations() -> Json<serde_json::Value> {
         *barca_values.entry(barca.clone()).or_insert(0.0) += value;
     }
 
+    // 2. Fix per_barca aggregation: aggregate by barca only, not by (symbol, group, barca)
+    let mut barca_values: HashMap<String, f64> = HashMap::new();
+    for ((_, _, barca), (value, _quantity)) in &asset_values {
+        *barca_values.entry(barca.clone()).or_insert(0.0) += *value;
+    }
+
     let per_barca: Vec<_> = barca_targets.iter().map(|(barca, barca_target)| {
         let barca_value = barca_values.get(barca).copied().unwrap_or(0.0);
         let barca_percent = if total_wallet_value > 0.0 {
@@ -281,14 +293,8 @@ async fn api_allocations() -> Json<serde_json::Value> {
 
     // Aggregate actual value per BARCA (using the BARCA column)
     let mut barca_actual_values: HashMap<String, f64> = HashMap::new();
-    for alloc in &allocations {
-        // Make sure you have barca in your WalletAllocation struct and CSV!
-        let barca = alloc.barca.clone();
-        let value = asset_values
-            .get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone()))
-            .copied()
-            .unwrap_or((0.0,0.0)).0;
-        *barca_actual_values.entry(barca).or_insert(0.0) += value;
+    for ((_, _, barca), (value, _quantity)) in &asset_values {
+        *barca_actual_values.entry(barca.clone()).or_insert(0.0) += *value;
     }
 
     // Build per_barca_actual: [{ barca, value, current_percent }]
