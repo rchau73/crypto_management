@@ -7,12 +7,12 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 ## Features
 
 - **Live Price Updates:** Fetches current prices and wallet values from CoinMarketCap.
-- **Per-Asset Table:** View all assets with filters for Asset, Group, and BARCA. Pagination (20 per page) included.
-- **Per-Group Table:** See group allocations with current value ($), percent, and deviation.
-- **BARCA Actual Table:** See actual allocation per BARCA group.
-- **Pie Charts:** Visualize allocations by Group and BARCA (target and actual) with readable, small labels.
+- **Per-Asset Table:** View all assets with filters for Asset, Group, and BARCA. Includes pagination.
+- **Per-Group Table:** See group allocations with current value ($), percent, deviation, and value deviation.
+- **BARCA Actual Table:** View actual allocation per BARCA group.
+- **Pie Charts:** Visualize allocations by Group and BARCA (target and actual) with readable labels.
 - **Tabs:** Switch between tables and charts using tabs.
-- **Responsive UI:** Built with Material UI and Recharts, dark mode enabled.
+- **Responsive UI:** Built with Material UI and Recharts, with dark mode enabled.
 
 ---
 

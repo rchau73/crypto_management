@@ -37,6 +37,7 @@ struct CryptoData {
     id: u32,
     name: String,
     symbol: String,
+    cmc_rank: u32,
     tvl_ratio: Option<f64>,
     tvl_usd: Option<f64>,
     quote: QuoteData,
