@@ -1,5 +1,6 @@
 /target
 .env
+/.vscode
 crypto_quotes.csv
 wallet_allocations.csv
 *.bkp
