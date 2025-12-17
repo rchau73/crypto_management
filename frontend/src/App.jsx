@@ -76,8 +76,47 @@ function App() {
   function getSortedRows(rows) {
     if (!sortConfig.key) return rows;
     return [...rows].sort((a, b) => {
-      const aValue = a[sortConfig.key];
-      const bValue = b[sortConfig.key];
+      let aValue, bValue;
+      
+      // Handle calculated fields that don't exist in raw data
+      if (sortConfig.key === "value_deviation") {
+        // Calculate value deviation for both rows
+        const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
+        const relevantTotalValue = isFiltered ? filteredTotalValue : totalWalletValue;
+        
+        const aTargetValue = relevantTotalValue * (a.target_percent / 100);
+        const bTargetValue = relevantTotalValue * (b.target_percent / 100);
+        aValue = a.value - aTargetValue;
+        bValue = b.value - bTargetValue;
+      } else if (sortConfig.key === "dca") {
+        // Calculate DCA for both rows (30% of absolute value deviation)
+        const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
+        const relevantTotalValue = isFiltered ? filteredTotalValue : totalWalletValue;
+        
+        const aTargetValue = relevantTotalValue * (a.target_percent / 100);
+        const bTargetValue = relevantTotalValue * (b.target_percent / 100);
+        const aValueDeviation = a.value - aTargetValue;
+        const bValueDeviation = b.value - bTargetValue;
+        aValue = Math.abs(aValueDeviation) * 0.3;
+        bValue = Math.abs(bValueDeviation) * 0.3;
+      } else if (sortConfig.key === "current_percent" && (assetFilter !== "" || groupFilter !== "" || barcaFilter !== "")) {
+        // Use recalculated current percent for filtered views
+        const relevantTotalValue = filteredTotalValue;
+        aValue = relevantTotalValue > 0 ? (a.value / relevantTotalValue) * 100 : 0;
+        bValue = relevantTotalValue > 0 ? (b.value / relevantTotalValue) * 100 : 0;
+      } else if (sortConfig.key === "deviation" && (assetFilter !== "" || groupFilter !== "" || barcaFilter !== "")) {
+        // Use recalculated deviation for filtered views
+        const relevantTotalValue = filteredTotalValue;
+        const aCurrentPercent = relevantTotalValue > 0 ? (a.value / relevantTotalValue) * 100 : 0;
+        const bCurrentPercent = relevantTotalValue > 0 ? (b.value / relevantTotalValue) * 100 : 0;
+        aValue = aCurrentPercent - a.target_percent;
+        bValue = bCurrentPercent - b.target_percent;
+      } else {
+        // Use regular property access for other fields
+        aValue = a[sortConfig.key];
+        bValue = b[sortConfig.key];
+      }
+      
       if (aValue === undefined || bValue === undefined) return 0;
       if (typeof aValue === "number" && typeof bValue === "number") {
         return sortConfig.direction === "asc" ? aValue - bValue : bValue - aValue;
@@ -163,6 +202,9 @@ function App() {
     (barcaFilter === "" || row.barca === barcaFilter)
   );
 
+  // Calculate filtered total value (sum of only filtered assets)  
+  const filteredTotalValue = filteredAllocations.reduce((sum, row) => sum + (typeof row.value === "number" ? row.value : 0), 0);
+
   // Only sort Per-Asset Table
   const sortedAllocations = getSortedRows(filteredAllocations);
   const totalPages = Math.ceil(sortedAllocations.length / pageSize);
@@ -220,7 +262,7 @@ function App() {
         )}
 
         {/* Filters */}
-        <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
+        <Box sx={{ display: "flex", gap: 2, mb: 2, alignItems: "center", flexWrap: "wrap" }}>
           <select value={assetFilter} onChange={e => setAssetFilter(e.target.value)}>
             <option value="">All Assets</option>
             {assetOptions.map(opt => (
@@ -239,6 +281,11 @@ function App() {
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
+          {(assetFilter !== "" || groupFilter !== "" || barcaFilter !== "") && (
+            <Typography variant="body2" sx={{ color: "#FFBB28", fontStyle: "italic" }}>
+              ⚡ Filtered View: Percentages calculated relative to filtered assets only
+            </Typography>
+          )}
         </Box>
 
         {/* Tabs */}
@@ -254,11 +301,16 @@ function App() {
             <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
               Per-Asset Allocation (Current Prices)
               <span style={{ color: "#00C49F", fontWeight: "normal", marginLeft: 16, fontSize: 14 }}>
-                Total Target %: {formatNumber(getTotalTargetPercent(sortedAllocations))}%
+                Total Target %: {formatNumber(getTotalTargetPercent(filteredAllocations))}%
+                {(assetFilter !== "" || groupFilter !== "" || barcaFilter !== "") && (
+                  <span style={{ color: "#FFBB28", marginLeft: 8 }}>
+                    (Filtered Total: ${formatNumber(filteredTotalValue)})
+                  </span>
+                )}
               </span>
             </Typography>
-            <TableContainer component={Paper} sx={{ maxWidth: "100%", overflowX: "auto" }}>
-              <Table sx={{ minWidth: 600 }}>
+            <TableContainer component={Paper} sx={{ width: "100%" }}>
+              <Table sx={{ width: "100%", tableLayout: "auto" }}>
                 <TableHead>
                   <TableRow>
                     {[
@@ -271,12 +323,32 @@ function App() {
                       { key: "target_percent", label: "Target %", align: "right" },
                       { key: "current_percent", label: "Current %", align: "right" },
                       { key: "deviation", label: "Deviation", align: "right" },
-                      { key: "value_deviation", label: "Value Deviation", align: "right" }, // New column
+                      { key: "value_deviation", label: "Value Deviation", align: "right" },
+                      { key: "dca", label: "DCA", align: "right" },
                     ].map((col) => (
                       <TableCell
                         key={col.key}
                         align={col.align || "left"}
-                        sx={{ cursor: "pointer", fontWeight: "bold", fontSize: 12 }}
+                        sx={{ 
+                          cursor: "pointer", 
+                          fontWeight: "bold", 
+                          fontSize: 12,
+                          width: col.key === "symbol" ? "8%" : 
+                                 col.key === "group" ? "12%" : 
+                                 col.key === "barca" ? "12%" : 
+                                 col.key === "price" ? "10%" : 
+                                 col.key === "current_quantity" ? "8%" : 
+                                 col.key === "value" ? "12%" : 
+                                 col.key === "target_percent" ? "8%" : 
+                                 col.key === "current_percent" ? "8%" : 
+                                 col.key === "deviation" ? "10%" : 
+                                 col.key === "value_deviation" ? "10%" : 
+                                 col.key === "dca" ? "8%" : "auto",
+                          padding: "8px 4px",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis"
+                        }}
                         onClick={() => handleSort(col.key)}
                       >
                         <Button
@@ -302,34 +374,51 @@ function App() {
                 </TableHead>
                 <TableBody>
                   {paginatedAllocations.map((row, idx) => {
-                    const proportionalValue = row.value * row.target_percent / row.current_percent;
-                    const valueDeviation = row.deviation >= 0 ?
-                                          row.value - proportionalValue :
-                                          proportionalValue - row.value;
+                    // Use filtered total if any filters are active, otherwise use total wallet value
+                    const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
+                    const relevantTotalValue = isFiltered ? filteredTotalValue : totalWalletValue;
+                    
+                    // Recalculate current percent based on the relevant total
+                    const recalculatedCurrentPercent = relevantTotalValue > 0 ? (row.value / relevantTotalValue) * 100 : 0;
+                    
+                    // Recalculate deviation based on the filtered context
+                    const recalculatedDeviation = recalculatedCurrentPercent - row.target_percent;
+                    
+                    // Calculate target dollar value for this asset based on relevant total
+                    const targetValue = relevantTotalValue * (row.target_percent / 100);
+                    // Value deviation is simply current value minus target value
+                    const valueDeviation = row.value - targetValue;
+                    // DCA is 30% of the absolute value deviation to help with investment adjustments
+                    const dca = Math.abs(valueDeviation) * 0.3;
                     return (
                       <TableRow key={idx + (page - 1) * pageSize}>
-                        <TableCell sx={{ fontSize: 10 }}>{row.symbol}</TableCell>
-                        <TableCell sx={{ fontSize: 10 }}>{row.group}</TableCell>
-                        <TableCell sx={{ fontSize: 10 }}>{row.barca}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.price)}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.current_quantity)}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10 }}>${formatNumber(row.value)}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.target_percent)}%</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10 }}>{formatNumber(row.current_percent)}%</TableCell>
+                        <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap" }}>{row.symbol}</TableCell>
+                        <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }} title={row.group}>{row.group}</TableCell>
+                        <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }} title={row.barca}>{row.barca}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.price)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.current_quantity)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>${formatNumber(row.value)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.target_percent)}%</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(recalculatedCurrentPercent)}%</TableCell>
                         <TableCell
                           align="right"
                           sx={{
-                            color: Math.abs(row.deviation) > 1 ? "error.main" : "inherit",
-                            fontWeight: Math.abs(row.deviation) > 1 ? "bold" : "normal",
+                            color: Math.abs(recalculatedDeviation) > 1 ? "error.main" : "inherit",
+                            fontWeight: Math.abs(recalculatedDeviation) > 1 ? "bold" : "normal",
                             fontSize: 10,
+                            padding: "8px 4px",
                             whiteSpace: "nowrap",
                           }}
                         >
-                          {row.deviation > 0 ? "+" : ""}
-                          {formatNumber(row.deviation)}%
+                          {recalculatedDeviation > 0 ? "+" : ""}
+                          {formatNumber(recalculatedDeviation)}%
                         </TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10 }}>
-                          ${formatNumber(valueDeviation)} {/* Display value deviation */}
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>
+                          {valueDeviation > 0 ? "+$" : valueDeviation < 0 ? "-$" : "$"}
+                          {formatNumber(Math.abs(valueDeviation))}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>
+                          ${formatNumber(dca)}
                         </TableCell>
                       </TableRow>
                     );

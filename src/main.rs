@@ -136,6 +136,8 @@ async fn fetch_crypto_data(api_key: &str) -> Result<Vec<CryptoData>, ReqwestErro
     let parsed_response: ApiResponse = response.json().await?;
     println!("\n************************************");
     println!("Response: {:?}", parsed_response.status);
+    println!("Fetched {} cryptocurrencies", parsed_response.data.len());
+    println!("Full Payload: {:?}", parsed_response.data);
     println!("************************************\n\n");
     Ok(parsed_response.data)
 }
