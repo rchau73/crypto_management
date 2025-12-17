@@ -1,0 +1,7 @@
+mint,symbol,coingecko_id,default_group,default_barca,is_lp
+SOL,SOL,solana,Core,Base,false
+Es9vMFrzaCERX5J1b7tJAGV8rRkPsZBWLgxJxL8b3CLX,USDT,tether,Cash,Stable,false
+EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,USDC,usd-coin,Cash,Stable,false
+So11111111111111111111111111111111111111112,WSOL,wrapped-sol,Cash,Stable,false
+7dHbWXmci3dF6dYd7zJYcNchqYh6gY2Y47h4H6mxaCz6,stSOL,lido-staked-sol,DeFi,DeFi,false
+

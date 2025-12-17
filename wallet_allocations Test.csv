@@ -1,0 +1,8 @@
+symbol,group,barca,target_percent,current_quantity,comments
+USDT,Holding,Caixa,31.94,60000,Binance
+BTC,Holding,Base,37.89,0.65,Binance
+ETH,Holding,Altcoins,12.71,6,Binance
+AAVE,Holding,Altcoins,9.97,70,Binance
+ADA,Holding,Altcoins,7.48,18000,Binance
+USDT,RendaPassiva,Caixa,12,10000,Pool
+USDT,Trade,Caixa,10,10000,BitGet
