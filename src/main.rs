@@ -3,10 +3,8 @@ use serde::{Deserialize, Serialize};
 use tokio;
 use dotenv::dotenv;
 use std::error::Error;
-use std::fs::File;
-use csv::Writer;
 use std::collections::HashMap;
-use csv::Reader;
+use std::sync::Arc;
 use axum::{
     routing::get,
     Router,
@@ -15,15 +13,41 @@ use axum::{
 use serde_json::json;
 use std::net::SocketAddr;
 use tower_http::cors::{self, Any, CorsLayer};
+use axum::http::StatusCode;
+use tracing::{info, debug, error, warn};
+
+mod service;
+use crate::service::compute_allocations;
+mod csv_store;
+mod api_client;
+use crate::api_client::{CryptoProvider, ReqwestCryptoProvider};
+use axum::extract::State as AxumState;
+use axum::extract::State;
+mod csv_history;
+use crate::csv_history::{append_asset_snapshot, append_barca_snapshot, append_totals_snapshot, read_history_csv};
+use chrono::Utc;
+use axum::extract::Query;
+use serde::Deserialize as SerdeDeserialize;
+use std::path::PathBuf;
+
+#[derive(Clone)]
+struct AppState {
+    #[allow(dead_code)]
+    provider: Arc<dyn CryptoProvider>,
+    history_assets: String,
+    history_barca: String,
+    history_totals: String,
+}
+use crate::csv_store::AllocationStore;
 
 // Define the structure of the API response
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 struct ApiResponse {
     status: ApiStatus,
     data: Vec<CryptoData>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 struct ApiStatus {
     timestamp: String,
     error_code: i32,
@@ -32,7 +56,7 @@ struct ApiStatus {
     notice: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 struct CryptoData {
     id: u32,
     name: String,
@@ -43,13 +67,13 @@ struct CryptoData {
     quote: QuoteData,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 struct QuoteData {
     #[serde(rename = "USD")]
     usd: PriceInfo,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 struct PriceInfo {
     price: f64,
     volume_24h: f64,
@@ -105,17 +129,6 @@ struct Allocation {
     comments: Option<String>, // This will be ignored in all calculations
 }
 
-fn read_barca_allocations(path: &str, current_market: &str) -> Result<HashMap<String, f64>, Box<dyn Error>> {
-    let mut rdr = csv::ReaderBuilder::new().trim(csv::Trim::All).from_path(path)?;
-    let mut barca_targets = HashMap::new();
-    for result in rdr.deserialize() {
-        let record: BarcaAllocation = result?;
-        if record.market == current_market {
-            barca_targets.insert(record.group.clone(), record.target_percent);
-        }
-    }
-    Ok(barca_targets)
-}
 
 // Function to fetch cryptocurrency data
 async fn fetch_crypto_data(api_key: &str) -> Result<Vec<CryptoData>, ReqwestError> {
@@ -134,201 +147,141 @@ async fn fetch_crypto_data(api_key: &str) -> Result<Vec<CryptoData>, ReqwestErro
 
     // Deserialize JSON into our struct
     let parsed_response: ApiResponse = response.json().await?;
-    println!("\n************************************");
-    println!("Response: {:?}", parsed_response.status);
-    println!("Fetched {} cryptocurrencies", parsed_response.data.len());
-    println!("Full Payload: {:?}", parsed_response.data);
-    println!("************************************\n\n");
+    info!(status = ?parsed_response.status, fetched = parsed_response.data.len());
+    debug!(data = ?parsed_response.data);
     Ok(parsed_response.data)
 }
 
 // Read wallet allocations from CSV
-fn read_wallet_allocations(path: &str) -> Result<Vec<WalletAllocation>, Box<dyn Error>> {
-    let mut rdr = Reader::from_path(path)?;
-    let mut allocations = Vec::new();
-    for result in rdr.deserialize() {
-        let record: WalletAllocation = result?;
-        allocations.push(record);
+ 
+ 
+#[tracing::instrument(skip(state))]
+async fn api_allocations(State(state): AxumState<AppState>) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    dotenv().ok();
+    let api_key = match std::env::var("API_KEY") {
+        Ok(k) => k,
+        Err(_) => {
+            error!("Missing API_KEY environment variable");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Missing API_KEY"}))));
+        }
+    };
+
+    let current_market = std::env::var("CURRENT_MARKET").unwrap_or_else(|_| "BullMarket".to_string());
+
+    let store = crate::csv_store::FileCsvStore;
+    let allocations = match store.read_wallet_allocations("wallet_allocations.csv") {
+        Ok(a) => a,
+        Err(e) => {
+            error!(error = %e, "Failed reading wallet allocations");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed reading wallet allocations: {}", e)}))));
+        }
+    };
+
+    let cryptos = match state.provider.fetch_latest(&api_key).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "Failed fetching crypto data");
+            return Err((StatusCode::BAD_GATEWAY, Json(json!({"error": format!("Failed fetching crypto data: {}", e)}))));
+        }
+    };
+
+    let barca_targets = match store.read_barca_allocations("wallet_barca.csv", &current_market) {
+        Ok(b) => b,
+        Err(e) => {
+            error!(error = %e, "Failed reading barca allocations");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed reading barca allocations: {}", e)}))));
+        }
+    };
+
+    let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+    // Persist historical snapshots (append) using configured paths
+    let ts = Utc::now();
+    let per_asset = result.get("per_asset").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let per_barca_actual = result.get("per_barca_actual").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    // compute total
+    let total_value = per_asset.iter().map(|a| a.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0)).sum::<f64>();
+    // Attempt to persist snapshots and log results for diagnostics
+    match append_asset_snapshot(&ts, &per_asset, &state.history_assets) {
+        Ok(_) => info!(path = %state.history_assets, "Appended asset snapshot"),
+        Err(e) => error!(path = %state.history_assets, error = %e, "Failed to append asset snapshot"),
     }
-    Ok(allocations)
+    match append_barca_snapshot(&ts, &per_barca_actual, &state.history_barca) {
+        Ok(_) => info!(path = %state.history_barca, "Appended barca snapshot"),
+        Err(e) => error!(path = %state.history_barca, error = %e, "Failed to append barca snapshot"),
+    }
+    match append_totals_snapshot(&ts, total_value, &state.history_totals) {
+        Ok(_) => info!(path = %state.history_totals, "Appended totals snapshot"),
+        Err(e) => error!(path = %state.history_totals, error = %e, "Failed to append totals snapshot"),
+    }
+    // Provide diagnostic debug info with absolute paths and append status
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let abs_assets = cwd.join(&state.history_assets).to_string_lossy().to_string();
+    let abs_barca = cwd.join(&state.history_barca).to_string_lossy().to_string();
+    let abs_totals = cwd.join(&state.history_totals).to_string_lossy().to_string();
+
+    // Re-run append calls but capture results for response (we already logged above; re-check return values)
+    let assets_status = match append_asset_snapshot(&ts, &per_asset, &state.history_assets) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(format!("{}", e))),
+    };
+    let barca_status = match append_barca_snapshot(&ts, &per_barca_actual, &state.history_barca) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(format!("{}", e))),
+    };
+    let totals_status = match append_totals_snapshot(&ts, total_value, &state.history_totals) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(format!("{}", e))),
+    };
+
+    let mut resp = result;
+    let debug = json!({
+        "cwd": cwd.to_string_lossy().to_string(),
+        "assets": {"path": state.history_assets, "abs_path": abs_assets, "ok": assets_status.0, "error": assets_status.1},
+        "barca": {"path": state.history_barca, "abs_path": abs_barca, "ok": barca_status.0, "error": barca_status.1},
+        "totals": {"path": state.history_totals, "abs_path": abs_totals, "ok": totals_status.0, "error": totals_status.1},
+    });
+    if let serde_json::Value::Object(ref mut m) = resp {
+        m.insert("debug".to_string(), debug);
+    }
+    Ok(Json(resp))
 }
 
-async fn api_allocations() -> Json<serde_json::Value> {
-    dotenv().ok();
-    let api_key = std::env::var("API_KEY").unwrap();
-    let current_market = std::env::var("CURRENT_MARKET").unwrap_or_else(|_| "BullMarket".to_string());
-    let allocations = read_wallet_allocations("wallet_allocations.csv").unwrap();
-    let cryptos = fetch_crypto_data(&api_key).await.unwrap();
+#[derive(SerdeDeserialize)]
+struct HistoryQuery {
+    level: Option<String>,
+}
 
-    let crypto_map: HashMap<String, &CryptoData> = cryptos.iter()
-        .map(|c| (c.symbol.clone(), c))
-        .collect();
-
-    let mut asset_values: HashMap<(String, String, String), (f64, f64)> = HashMap::new(); // (value, quantity)
-    let mut total_wallet_value = 0.0;
-
-    for alloc in &allocations {
-        if let Some(crypto) = crypto_map.get(&alloc.symbol) {
-            let price = crypto.quote.usd.price;
-            let value = alloc.current_quantity * price;
-            let key = (alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone());
-            asset_values
-                .entry(key)
-                .and_modify(|(v, q)| {
-                    *v += value;
-                    *q += alloc.current_quantity;
-                })
-                .or_insert((value, alloc.current_quantity));
-            total_wallet_value += value;
-        }
-    }
-
-    // Build per_asset table: one row per unique (symbol, group, barca)
-    let per_asset: Vec<_> = asset_values.iter().map(|((symbol, group, barca), (value, quantity))| {
-        let price = crypto_map.get(symbol).map(|c| c.quote.usd.price).unwrap_or(0.0);
-        let target_percent = allocations
-            .iter()
-            .filter(|a| &a.symbol == symbol && &a.group == group && &a.barca == barca)
-            .map(|a| a.target_percent)
-            .sum::<f64>();
-        let current_percent = if total_wallet_value != 0.0 {
-            (*value / total_wallet_value) * 100.0
-        } else {
-            0.0
-        };
-        let deviation = current_percent - target_percent;
-        json!({
-            "symbol": symbol,
-            "group": group,
-            "barca": barca,
-            "price": price,
-            "current_quantity": quantity,
-            "value": value,
-            "target_percent": target_percent,
-            "current_percent": current_percent,
-            "deviation": deviation
-        })
-    }).collect();
-
-    let mut group_targets: HashMap<String, f64> = HashMap::new();
-    let mut group_values: HashMap<String, f64> = HashMap::new();
-    for alloc in &allocations {
-        let group = &alloc.group;
-        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone())).copied().unwrap_or((0.0, 0.0)).0;
-        *group_targets.entry(group.clone()).or_insert(0.0) += alloc.target_percent;
-        *group_values.entry(group.clone()).or_insert(0.0) += value;
-    }
-
-    // Calculate group target values (in $)
-    let mut group_target_values: HashMap<String, f64> = HashMap::new();
-    for alloc in &allocations {
-        let target_value = total_wallet_value * alloc.target_percent / 100.0;
-        *group_target_values.entry(alloc.group.clone()).or_insert(0.0) += target_value;
-    }
-
-    // Calculate group actual values (already correct)
-    let mut group_values: HashMap<String, f64> = HashMap::new();
-    for alloc in &allocations {
-        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone())).copied().unwrap_or((0.0,0.0)).0;
-        *group_values.entry(alloc.group.clone()).or_insert(0.0) += value;
-    }
-
-    // 1. Fix per_group aggregation: aggregate by group only, not by (symbol, group, barca)
-    let mut group_values: HashMap<String, f64> = HashMap::new();
-    for ((_, group, _), (value, _quantity)) in &asset_values {
-        *group_values.entry(group.clone()).or_insert(0.0) += *value;
-    }
-
-    // Build per_group table
-    let per_group: Vec<_> = group_values.iter().map(|(group, group_value)| {
-        let group_target_value = group_target_values.get(group).copied().unwrap_or(0.0);
-        let group_target_percent = if total_wallet_value > 0.0 {
-            (group_target_value / total_wallet_value) * 100.0
-        } else {
-            0.0
-        };
-        let group_percent = if total_wallet_value > 0.0 {
-            (*group_value / total_wallet_value) * 100.0
-        } else {
-            0.0
-        };
-        let deviation = group_percent - group_target_percent;
-        json!({
-            "group": group,
-            "target_percent": group_target_percent,
-            "current_percent": group_percent,
-            "deviation": deviation,
-            "value": group_value
-        })
-    }).collect();
-
-    let barca_targets = read_barca_allocations("wallet_barca.csv", &current_market).unwrap();
-
-    // Now, for each group (BARCA), use barca_targets.get(group) as the target_percent
-    let mut barca_values: HashMap<String, f64> = HashMap::new();
-    for alloc in &allocations {
-        let barca = &alloc.barca;
-        let value = asset_values.get(&(alloc.symbol.clone(), alloc.group.clone(), alloc.barca.clone())).copied().unwrap_or((0.0,0.0)).0;
-        *barca_values.entry(barca.clone()).or_insert(0.0) += value;
-    }
-
-    // 2. Fix per_barca aggregation: aggregate by barca only, not by (symbol, group, barca)
-    let mut barca_values: HashMap<String, f64> = HashMap::new();
-    for ((_, _, barca), (value, _quantity)) in &asset_values {
-        *barca_values.entry(barca.clone()).or_insert(0.0) += *value;
-    }
-
-    let per_barca: Vec<_> = barca_targets.iter().map(|(barca, barca_target)| {
-        let barca_value = barca_values.get(barca).copied().unwrap_or(0.0);
-        let barca_percent = if total_wallet_value > 0.0 {
-            (barca_value / total_wallet_value) * 100.0
-        } else {
-            0.0
-        };
-        let deviation = barca_percent - barca_target;
-        json!({
-            "barca": barca,
-            "target_percent": barca_target,
-            "current_percent": barca_percent,
-            "deviation": deviation
-        })
-    }).collect();
-
-    // Aggregate actual value per BARCA (using the BARCA column)
-    let mut barca_actual_values: HashMap<String, f64> = HashMap::new();
-    for ((_, _, barca), (value, _quantity)) in &asset_values {
-        *barca_actual_values.entry(barca.clone()).or_insert(0.0) += *value;
-    }
-
-    // Build per_barca_actual: [{ barca, value, current_percent }]
-    let per_barca_actual: Vec<_> = barca_actual_values.iter().map(|(barca, value)| {
-        let current_percent = if total_wallet_value > 0.0 {
-            (*value / total_wallet_value) * 100.0
-        } else {
-            0.0
-        };
-        json!({
-            "barca": barca,
-            "value": value,
-            "current_percent": current_percent
-        })
-    }).collect();
-
-    Json(json!({
-        "per_asset": per_asset,
-        "per_group": per_group,
-        "per_barca": per_barca,
-        "per_barca_actual": per_barca_actual
-    }))
+async fn api_history(Query(q): Query<HistoryQuery>) -> Json<serde_json::Value> {
+    let level = q.level.unwrap_or_else(|| "totals".to_string());
+    let out = match level.as_str() {
+        "assets" => read_history_csv("history_assets.csv").unwrap_or_default(),
+        "barca" => read_history_csv("history_barca.csv").unwrap_or_default(),
+        _ => read_history_csv("history_totals.csv").unwrap_or_default(),
+    };
+    Json(json!({"level": level, "rows": out}))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv().ok();
 
+    // Initialize tracing subscriber for logging
+    tracing_subscriber::fmt::init();
+
     let backend = async {
+            // initialize provider and app state
+            let provider = Arc::new(ReqwestCryptoProvider::new());
+            let app_state = AppState {
+                provider: provider.clone(),
+                history_assets: "history_assets.csv".to_string(),
+                history_barca: "history_barca.csv".to_string(),
+                history_totals: "history_totals.csv".to_string(),
+            };
+
             let app = Router::new()
         .route("/api/allocations", get(api_allocations))
+        .route("/api/history", get(api_history))
+        .with_state(app_state)
         .layer(CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
@@ -343,11 +296,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn serve(app: Router, port: u16) {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    println!("Listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap();
-    axum::serve(listener, app).await;
+    // Try to bind to the requested port; if it's in use, try a few subsequent ports.
+    let max_attempts = 10;
+    for offset in 0..max_attempts {
+        let try_port = port + offset;
+        let addr = SocketAddr::from(([127, 0, 0, 1], try_port));
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(listener) => {
+                println!("Listening on {}", addr);
+                if let Err(e) = axum::serve(listener, app).await {
+                    error!(error = %e, "Server failed while serving");
+                }
+                return;
+            }
+            Err(e) => {
+                warn!(port = try_port, error = %e, "Port unavailable, trying next");
+            }
+        }
+    }
+    error!("Failed to bind to any port in range {}..{}", port, port + max_attempts - 1);
 }
 

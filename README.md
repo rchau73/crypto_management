@@ -151,6 +151,64 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 
 ---
 
+## New Endpoints & CSV History (Snapshots)
+
+This project now stores historical snapshots every time prices are updated (when you click "Update Prices & Show Distribution"). The backend appends rows to three CSV files and exposes a simple API to read history.
+
+- Endpoints
+   - `GET /api/allocations` — existing endpoint that computes current allocations and, as a side-effect, appends a historical snapshot to CSV files.
+   - `GET /api/history?level={totals|assets|barca}` — returns the historical rows for the requested level as JSON. Example:
+      - `/api/history?level=totals` returns `{ "level": "totals", "rows": [ ... ] }`
+
+- CSV files written (append-only)
+   - `history_assets.csv` — asset-level rows. Columns:
+      - `timestamp` (RFC3339 UTC)
+      - `symbol` (string)
+      - `group` (string)
+      - `barca` (string)
+      - `quantity` (number)
+      - `price` (number)
+      - `value` (number)
+      - `target_percent` (number)
+
+   - `history_barca.csv` — BARCA consolidated rows. Columns:
+      - `timestamp` (RFC3339 UTC)
+      - `barca` (string)
+      - `value` (number)
+      - `current_percent` (number)
+
+   - `history_totals.csv` — totals per snapshot. Columns:
+      - `timestamp` (RFC3339 UTC)
+      - `total_value` (number)
+
+Notes:
+   - Files are appended in the server working directory by default. You can change these paths in the backend `AppState` if you want them stored elsewhere.
+   - Each invocation of `/api/allocations` writes the current computed rows to the CSVs. The write is best-effort (errors are logged) and does not block returning the allocations JSON.
+
+- Example curl usage
+   - Trigger a price update (this also writes history):
+      ```sh
+      curl -sS http://127.0.0.1:3001/api/allocations | jq .
+      ```
+
+   - Read totals history:
+      ```sh
+      curl -sS "http://127.0.0.1:3001/api/history?level=totals" | jq .
+      ```
+
+   - Read asset history:
+      ```sh
+      curl -sS "http://127.0.0.1:3001/api/history?level=assets" | jq .
+      ```
+
+   - Read BARCA history:
+      ```sh
+      curl -sS "http://127.0.0.1:3001/api/history?level=barca" | jq .
+      ```
+
+These CSV snapshots enable time-based dashboards (daily/weekly/monthly/quarter/year) and P&L calculations over time.
+
+
 ## License
 
 MIT
