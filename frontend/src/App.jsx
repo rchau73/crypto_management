@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   CssBaseline, // <-- Add this import
   Container,
@@ -18,7 +18,7 @@ import {
   Tab,
 } from "@mui/material";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { PieChart, Pie, Cell, Legend, Tooltip, ResponsiveContainer } from "recharts";
+import { PieChart, Pie, Cell, Legend, Tooltip, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid } from "recharts";
 import dayjs from "dayjs"; // Make sure to install dayjs: npm install dayjs
 
 const darkTheme = createTheme({
@@ -218,6 +218,130 @@ function App() {
   // Tab state
   const [tab, setTab] = useState(0);
   const [lastUpdate, setLastUpdate] = useState(null);
+  // Dashboard states
+  const [dashboardData, setDashboardData] = useState([]);
+  const [dashboardLevel, setDashboardLevel] = useState('totals'); // 'totals' | 'assets' | 'barca'
+  const [granularity, setGranularity] = useState('daily'); // daily, weekly, monthly, quarterly, yearly
+  const [dashboardSeries, setDashboardSeries] = useState([]);
+  const [selectedSeries, setSelectedSeries] = useState([]);
+
+  // Fetch historical data for dashboard
+  const fetchHistory = async (level = dashboardLevel) => {
+    try {
+      const res = await fetch(`http://localhost:3001/api/history?level=${level}`);
+      if (!res.ok) throw new Error('Failed to fetch history');
+      const data = await res.json();
+      const rows = data.rows || [];
+      // Transform rows depending on level
+      let parsed = [];
+      if (level === 'assets') {
+        parsed = rows.map(r => ({ ts: r.timestamp || r['timestamp'], symbol: r.symbol || r['symbol'], value: parseFloat((r.value || r['value'] || 0)) })).filter(x => x.ts && x.symbol);
+      } else if (level === 'barca') {
+        parsed = rows.map(r => ({ ts: r.timestamp || r['timestamp'], barca: r.barca || r['barca'], value: parseFloat((r.value || r['value'] || 0)) })).filter(x => x.ts && x.barca);
+      } else {
+        parsed = rows.map(r => ({ ts: r.timestamp || r['timestamp'], value: parseFloat((r.total_value || r['total_value'] || 0)) })).filter(x => x.ts);
+      }
+
+      // Group by granularity and pick last value per period
+      const groups = {};
+      parsed.forEach(item => {
+        const d = dayjs(item.ts);
+        let key = '';
+        if (granularity === '5min') {
+          const minuteBucket = Math.floor(d.minute() / 5) * 5;
+          key = `${d.format('YYYY-MM-DD HH')}:${String(minuteBucket).padStart(2, '0')}`;
+        } else if (granularity === '30min') {
+          const minuteBucket = Math.floor(d.minute() / 30) * 30;
+          key = `${d.format('YYYY-MM-DD HH')}:${String(minuteBucket).padStart(2, '0')}`;
+        } else if (granularity === '1h') {
+          key = `${d.format('YYYY-MM-DD HH')}:00`;
+        } else if (granularity === '4h') {
+          const hourBucket = Math.floor(d.hour() / 4) * 4;
+          key = `${d.format('YYYY-MM-DD')} ${String(hourBucket).padStart(2, '0')}:00`;
+        } else if (granularity === 'daily') key = d.format('YYYY-MM-DD');
+        else if (granularity === 'weekly') key = d.startOf('week').format('YYYY-MM-DD');
+        else if (granularity === 'monthly') key = d.format('YYYY-MM');
+        else if (granularity === 'quarterly') {
+          const q = Math.floor(d.month() / 3) + 1;
+          key = `${d.year()}-Q${q}`;
+        } else if (granularity === 'yearly') key = `${d.year()}`;
+
+        // For assets/barca we want per-symbol aggregation
+        if (level === 'assets') {
+          let symbol = item.symbol;
+          groups[key] = groups[key] || {};
+          groups[key][symbol] = groups[key][symbol] || 0;
+          groups[key][symbol] += item.value;
+          groups[key].ts = item.ts;
+        } else if (level === 'barca') {
+          let barca = item.barca;
+          groups[key] = groups[key] || {};
+          groups[key][barca] = groups[key][barca] || 0;
+          groups[key][barca] += item.value;
+          groups[key].ts = item.ts;
+        } else {
+          if (!groups[key] || dayjs(item.ts).isAfter(dayjs(groups[key].ts))) {
+            groups[key] = { ts: item.ts, value: item.value };
+          }
+        }
+      });
+
+      // Convert groups to ordered array
+      let out = [];
+      if (level === 'assets' || level === 'barca') {
+        // determine available series
+        const seriesSet = new Set();
+        Object.values(groups).forEach(g => {
+          Object.keys(g).forEach(k => { if (k !== 'ts') seriesSet.add(k); });
+        });
+        const series = Array.from(seriesSet);
+        setDashboardSeries(series);
+        if (selectedSeries.length === 0 && series.length > 0) setSelectedSeries(series);
+
+        out = Object.keys(groups).map(k => {
+          const entry = { period: k, ts: groups[k].ts };
+          series.forEach(s => { entry[s] = groups[k][s] || 0; });
+          return entry;
+        });
+        out.sort((a,b) => (dayjs(a.ts).isBefore(dayjs(b.ts)) ? -1 : 1));
+        setDashboardData(out);
+      } else {
+        out = Object.keys(groups).map(k => ({ period: k, value: groups[k].value, ts: groups[k].ts }));
+        out.sort((a,b) => (dayjs(a.ts).isBefore(dayjs(b.ts)) ? -1 : 1));
+        setDashboardData(out);
+      }
+    } catch (err) {
+      console.error('Failed to fetch history', err);
+      setDashboardData([]);
+    }
+  };
+
+  // Custom tooltip for LineChart: show timestamp header (dark) and currency-formatted values
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload || payload.length === 0) return null;
+    // Prefer original timestamp if present on payload objects
+    const ts = (payload[0] && payload[0].payload && (payload[0].payload.ts || payload[0].payload.timestamp)) || label;
+    return (
+      <div style={{ background: '#ffffff', color: '#000000', padding: 8, borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', minWidth: 140 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6, color: '#000' }}>{ts}</div>
+        {payload.map((p, i) => (
+          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: 10, height: 10, background: p.color || '#000', borderRadius: 2 }} />
+              <div style={{ color: '#111' }}>{p.name || p.dataKey}</div>
+            </div>
+            <div style={{ color: '#111', fontWeight: 600 }}>{typeof p.value === 'number' ? `$${formatNumber(p.value)}` : p.value}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    // fetch when granularity or level changes
+    fetchHistory(dashboardLevel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardLevel, granularity]);
 
   return (
     <ThemeProvider theme={darkTheme}>
@@ -293,6 +417,7 @@ function App() {
           <Tab label="Per-Asset Table" />
           <Tab label="Per-Group Table" />
           <Tab label="BARCA Actual Table" />
+          <Tab label="Dashboard" />
         </Tabs>
 
         {/* Per-Asset Table */}
@@ -533,7 +658,7 @@ function App() {
                         <Cell key={`cell-group-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip />
+                    <Tooltip content={<CustomTooltip />} />
                     <Legend />
                   </PieChart>
                 </ResponsiveContainer>
@@ -656,6 +781,61 @@ function App() {
                 )}
               </Box>
             )}
+          </Box>
+        )}
+
+        {/* Dashboard Tab */}
+        {tab === 3 && (
+          <Box>
+            <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
+              Historical Dashboard
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 2, mb: 2, alignItems: 'center' }}>
+              <select value={dashboardLevel} onChange={e => setDashboardLevel(e.target.value)}>
+                <option value="totals">Totals</option>
+                <option value="barca">BARCA</option>
+                <option value="assets">Assets</option>
+              </select>
+              {(dashboardLevel === 'assets' || dashboardLevel === 'barca') && (
+                <select multiple value={selectedSeries} onChange={e => setSelectedSeries(Array.from(e.target.selectedOptions, o => o.value))} style={{ minWidth: 200 }}>
+                  {dashboardSeries.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              )}
+              <select value={granularity} onChange={e => setGranularity(e.target.value)}>
+                <option value="5min">5 min</option>
+                <option value="30min">30 min</option>
+                <option value="1h">1 hour</option>
+                <option value="4h">4 hours</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+              <Button variant="outlined" size="small" onClick={() => fetchHistory(dashboardLevel)}>Refresh</Button>
+            </Box>
+            <Box sx={{ height: 400 }}>
+              {dashboardData.length === 0 ? (
+                <Typography variant="body2">No data available. Click "Refresh" after updating prices.</Typography>
+              ) : (
+                <ResponsiveContainer width="100%" height={400}>
+                  <LineChart data={dashboardData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                    <CartesianGrid stroke="#333" strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    {dashboardLevel === 'totals' ? (
+                      <Line type="monotone" dataKey="value" stroke="#8884d8" dot={false} />
+                    ) : (
+                      selectedSeries.map((s, idx) => (
+                        <Line key={s} type="monotone" dataKey={s} stroke={COLORS[idx % COLORS.length]} dot={false} />
+                      ))
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </Box>
           </Box>
         )}
       </Container>
