@@ -224,28 +224,52 @@ function App() {
   const [granularity, setGranularity] = useState('daily'); // daily, weekly, monthly, quarterly, yearly
   const [dashboardSeries, setDashboardSeries] = useState([]);
   const [selectedSeries, setSelectedSeries] = useState([]);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState(null);
+  const [dashboardRaw, setDashboardRaw] = useState(null);
 
   // Fetch historical data for dashboard
   const fetchHistory = async (level = dashboardLevel) => {
+    setDashboardLoading(true);
+    setDashboardError(null);
     try {
       const res = await fetch(`http://localhost:3001/api/history?level=${level}`);
-      if (!res.ok) throw new Error('Failed to fetch history');
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`Failed to fetch history: ${res.status} ${res.statusText} ${txt}`);
+      }
       const data = await res.json();
+      setDashboardRaw(data);
       const rows = data.rows || [];
       // Transform rows depending on level
       let parsed = [];
       if (level === 'assets') {
-        parsed = rows.map(r => ({ ts: r.timestamp || r['timestamp'], symbol: r.symbol || r['symbol'], value: parseFloat((r.value || r['value'] || 0)) })).filter(x => x.ts && x.symbol);
+        parsed = rows.map(r => {
+          const rawVal = r.value !== undefined ? r.value : r['value'];
+          const value = typeof rawVal === 'number' ? rawVal : Number(rawVal || 0);
+          return { ts: String(r.timestamp || r['timestamp'] || ''), symbol: r.symbol || r['symbol'], value: isNaN(value) ? 0 : value };
+        }).filter(x => x.ts && x.symbol);
       } else if (level === 'barca') {
-        parsed = rows.map(r => ({ ts: r.timestamp || r['timestamp'], barca: r.barca || r['barca'], value: parseFloat((r.value || r['value'] || 0)) })).filter(x => x.ts && x.barca);
+        parsed = rows.map(r => {
+          const rawVal = r.value !== undefined ? r.value : r['value'];
+          const value = typeof rawVal === 'number' ? rawVal : Number(rawVal || 0);
+          return { ts: String(r.timestamp || r['timestamp'] || ''), barca: r.barca || r['barca'], value: isNaN(value) ? 0 : value };
+        }).filter(x => x.ts && x.barca);
       } else {
-        parsed = rows.map(r => ({ ts: r.timestamp || r['timestamp'], value: parseFloat((r.total_value || r['total_value'] || 0)) })).filter(x => x.ts);
+        parsed = rows.map(r => {
+          const rawVal = r.total_value !== undefined ? r.total_value : r['total_value'];
+          const value = typeof rawVal === 'number' ? rawVal : Number(rawVal || 0);
+          return { ts: String(r.timestamp || r['timestamp'] || ''), value: isNaN(value) ? 0 : value };
+        }).filter(x => x.ts);
       }
 
       // Group by granularity and pick last value per period
       const groups = {};
       parsed.forEach(item => {
-        const d = dayjs(item.ts);
+        // Parse timestamp and set to BRT (UTC-3) for bucketing/period labels
+        const _d0 = dayjs(String(item.ts));
+        if (!_d0.isValid()) return; // skip invalid timestamps
+        const d = _d0.subtract(3, 'hour');
         let key = '';
         if (granularity === '5min') {
           const minuteBucket = Math.floor(d.minute() / 5) * 5;
@@ -266,20 +290,38 @@ function App() {
           key = `${d.year()}-Q${q}`;
         } else if (granularity === 'yearly') key = `${d.year()}`;
 
-        // For assets/barca we want per-symbol aggregation
+        // For assets/barca we want the latest entry per symbol in the bucket (not accumulation)
         if (level === 'assets') {
-          let symbol = item.symbol;
-          groups[key] = groups[key] || {};
-          groups[key][symbol] = groups[key][symbol] || 0;
-          groups[key][symbol] += item.value;
-          groups[key].ts = item.ts;
+          const symbol = item.symbol;
+          groups[key] = groups[key] || { ts: null };
+          // initialize container for symbol if missing
+          if (!groups[key][symbol]) {
+            groups[key][symbol] = { ts: item.ts, value: item.value };
+          } else {
+            // keep the latest timestamp/value
+            if (dayjs(item.ts).isAfter(dayjs(groups[key][symbol].ts))) {
+              groups[key][symbol] = { ts: item.ts, value: item.value };
+            }
+          }
+          // ensure period ts is the latest among entries
+          if (!groups[key].ts || dayjs(item.ts).isAfter(dayjs(groups[key].ts))) {
+            groups[key].ts = item.ts;
+          }
         } else if (level === 'barca') {
-          let barca = item.barca;
-          groups[key] = groups[key] || {};
-          groups[key][barca] = groups[key][barca] || 0;
-          groups[key][barca] += item.value;
-          groups[key].ts = item.ts;
+          const name = item.barca;
+          groups[key] = groups[key] || { ts: null };
+          if (!groups[key][name]) {
+            groups[key][name] = { ts: item.ts, value: item.value };
+          } else {
+            if (dayjs(item.ts).isAfter(dayjs(groups[key][name].ts))) {
+              groups[key][name] = { ts: item.ts, value: item.value };
+            }
+          }
+          if (!groups[key].ts || dayjs(item.ts).isAfter(dayjs(groups[key].ts))) {
+            groups[key].ts = item.ts;
+          }
         } else {
+          // totals: keep latest entry per period (most recent snapshot)
           if (!groups[key] || dayjs(item.ts).isAfter(dayjs(groups[key].ts))) {
             groups[key] = { ts: item.ts, value: item.value };
           }
@@ -299,8 +341,11 @@ function App() {
         if (selectedSeries.length === 0 && series.length > 0) setSelectedSeries(series);
 
         out = Object.keys(groups).map(k => {
-          const entry = { period: k, ts: groups[k].ts };
-          series.forEach(s => { entry[s] = groups[k][s] || 0; });
+          const entry = { period: k, ts: String(groups[k].ts) };
+          series.forEach(s => {
+            const cell = groups[k][s];
+            entry[s] = cell && typeof cell === 'object' ? (cell.value || 0) : (cell || 0);
+          });
           return entry;
         });
         out.sort((a,b) => (dayjs(a.ts).isBefore(dayjs(b.ts)) ? -1 : 1));
@@ -312,8 +357,10 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to fetch history', err);
+      setDashboardError(String(err));
       setDashboardData([]);
     }
+    setDashboardLoading(false);
   };
 
   // Custom tooltip for LineChart: show timestamp header (dark) and currency-formatted values
@@ -321,9 +368,12 @@ function App() {
     if (!active || !payload || payload.length === 0) return null;
     // Prefer original timestamp if present on payload objects
     const ts = (payload[0] && payload[0].payload && (payload[0].payload.ts || payload[0].payload.timestamp)) || label;
+    // Display timestamp in BRT (UTC-3)
+    const _ts0 = dayjs(String(ts));
+    const displayTs = _ts0.isValid() ? _ts0.subtract(3, 'hour').format('YYYY-MM-DD HH:mm:ss') : String(ts);
     return (
       <div style={{ background: '#ffffff', color: '#000000', padding: 8, borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', minWidth: 140 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6, color: '#000' }}>{ts}</div>
+            <div style={{ fontWeight: 700, marginBottom: 6, color: '#000' }}>{displayTs}</div>
         {payload.map((p, i) => (
           <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -338,10 +388,12 @@ function App() {
   };
 
   useEffect(() => {
-    // fetch when granularity or level changes
-    fetchHistory(dashboardLevel);
+    // Only fetch history when Dashboard tab is active to avoid early crashes on load
+    if (tab === 3) {
+      fetchHistory(dashboardLevel);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboardLevel, granularity]);
+  }, [dashboardLevel, granularity, tab]);
 
   return (
     <ThemeProvider theme={darkTheme}>
@@ -381,8 +433,8 @@ function App() {
         </Button>
         {lastUpdate && (
           <Typography variant="body2" sx={{ color: "#aaa", alignSelf: "center" }}>
-            Last update: {dayjs(lastUpdate).format("YYYY-MM-DD HH:mm:ss")}
-          </Typography>
+                Last update: {dayjs(lastUpdate).subtract(3, 'hour').format("YYYY-MM-DD HH:mm:ss")}
+              </Typography>
         )}
 
         {/* Filters */}
@@ -791,7 +843,7 @@ function App() {
               Historical Dashboard
             </Typography>
             <Box sx={{ display: 'flex', gap: 2, mb: 2, alignItems: 'center' }}>
-              <select value={dashboardLevel} onChange={e => setDashboardLevel(e.target.value)}>
+              <select value={dashboardLevel} onChange={e => { const v = e.target.value; setDashboardLevel(v); fetchHistory(v); }}>
                 <option value="totals">Totals</option>
                 <option value="barca">BARCA</option>
                 <option value="assets">Assets</option>
@@ -801,7 +853,7 @@ function App() {
                   {dashboardSeries.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               )}
-              <select value={granularity} onChange={e => setGranularity(e.target.value)}>
+              <select value={granularity} onChange={e => { const g = e.target.value; setGranularity(g); fetchHistory(dashboardLevel); }}>
                 <option value="5min">5 min</option>
                 <option value="30min">30 min</option>
                 <option value="1h">1 hour</option>
@@ -816,14 +868,26 @@ function App() {
             </Box>
             <Box sx={{ height: 400 }}>
               {dashboardData.length === 0 ? (
-                <Typography variant="body2">No data available. Click "Refresh" after updating prices.</Typography>
+                <Box>
+                  <Typography variant="body2">No data available. Click "Refresh" after updating prices.</Typography>
+                  {dashboardLoading && <CircularProgress size={20} sx={{ mt: 1 }} />}
+                  {dashboardError && (
+                    <Typography variant="body2" sx={{ color: 'error.main', mt: 1 }}>{dashboardError}</Typography>
+                  )}
+                  {dashboardRaw && (
+                    <Box sx={{ mt: 2, bgcolor: '#0b0b0b', color: '#fff', p: 1, borderRadius: 1, maxHeight: 240, overflow: 'auto' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>Raw /api/history response</Typography>
+                      <pre style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>{JSON.stringify(dashboardRaw, null, 2)}</pre>
+                    </Box>
+                  )}
+                </Box>
               ) : (
                 <ResponsiveContainer width="100%" height={400}>
                   <LineChart data={dashboardData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                     <CartesianGrid stroke="#333" strokeDasharray="3 3" />
                     <XAxis dataKey="period" />
                     <YAxis />
-                    <Tooltip />
+                    <Tooltip content={<CustomTooltip />} />
                     <Legend />
                     {dashboardLevel === 'totals' ? (
                       <Line type="monotone" dataKey="value" stroke="#8884d8" dot={false} />

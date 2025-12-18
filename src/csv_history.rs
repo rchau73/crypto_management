@@ -71,7 +71,45 @@ pub fn read_history_csv(path: &str) -> Result<Vec<Value>, Box<dyn Error>> {
         let mut obj = serde_json::Map::new();
         for (i, field) in rec.iter().enumerate() {
             if let Some(h) = headers.get(i) {
-                obj.insert(h.to_string(), Value::String(field.to_string()));
+                let s = field.trim();
+                let key = h.to_lowercase();
+                // List of headers that should be treated as numeric floats
+                let numeric_headers = [
+                    "value",
+                    "price",
+                    "quantity",
+                    "total_value",
+                    "current_percent",
+                    "target_percent",
+                    "market_cap",
+                    "fdv",
+                    "volume_24h",
+                    "percent_change_24h",
+                    "percent_change_7d",
+                ];
+                let value = if s.is_empty() {
+                    Value::Null
+                } else if key.contains("timestamp") {
+                    // keep timestamps as strings (RFC3339 expected)
+                    Value::String(s.to_string())
+                } else if numeric_headers.contains(&key.as_str()) {
+                    // strip common thousands separators and try parse as f64
+                    let cleaned = s.replace(',', "");
+                    if let Ok(fv) = cleaned.parse::<f64>() {
+                        if let Some(n) = serde_json::Number::from_f64(fv) {
+                            Value::Number(n)
+                        } else {
+                            Value::String(s.to_string())
+                        }
+                    } else {
+                        // fallback: keep as string
+                        Value::String(s.to_string())
+                    }
+                } else {
+                    // fallback: keep string
+                    Value::String(s.to_string())
+                };
+                obj.insert(h.to_string(), value);
             }
         }
         out.push(Value::Object(obj));
