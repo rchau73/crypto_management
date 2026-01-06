@@ -13,7 +13,9 @@ pub struct ReqwestCryptoProvider {
 
 impl ReqwestCryptoProvider {
     pub fn new() -> Self {
-        Self { client: Client::new() }
+        Self {
+            client: Client::new(),
+        }
     }
 }
 
@@ -24,7 +26,9 @@ impl CryptoProvider for ReqwestCryptoProvider {
         let mut params = HashMap::new();
         params.insert("limit", "1000");
 
-        let response = self.client.get(url)
+        let response = self
+            .client
+            .get(url)
             .header("X-CMC_PRO_API_KEY", api_key)
             .header("Accept", "application/json")
             .query(&params)
@@ -42,6 +46,7 @@ pub struct MockCryptoProvider {
 }
 
 impl MockCryptoProvider {
+    #[allow(dead_code)]
     pub fn new(data: Vec<crate::CryptoData>) -> Self {
         Self { data }
     }

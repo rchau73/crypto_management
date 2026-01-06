@@ -49,6 +49,8 @@ function App() {
   const [barcaAllocations, setBarcaAllocations] = useState([]);
   const [barcaActualAllocations, setBarcaActualAllocations] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState("");
 
   // New filter states
   const [assetFilter, setAssetFilter] = useState("");
@@ -143,6 +145,28 @@ function App() {
       alert("Failed to fetch allocations: " + err.message);
     }
     setLoading(false);
+  };
+
+  const handleImportWallets = async () => {
+    setImporting(true);
+    setImportStatus("");
+    try {
+      const res = await fetch("http://localhost:3001/api/import_wallets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "wallet_allocations.csv" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Import failed");
+      }
+      const imported = data.imported ?? 0;
+      setImportStatus(`Imported ${imported} wallet rows from CSV`);
+      await fetchAllocations();
+    } catch (err) {
+      alert("Failed to import wallet allocations: " + err.message);
+    }
+    setImporting(false);
   };
 
   // Calculate total wallet value (sum of all per-asset values)
@@ -249,12 +273,15 @@ function App() {
           const value = typeof rawVal === 'number' ? rawVal : Number(rawVal || 0);
           return { ts: String(r.timestamp || r['timestamp'] || ''), symbol: r.symbol || r['symbol'], value: isNaN(value) ? 0 : value };
         }).filter(x => x.ts && x.symbol);
-      } else if (level === 'barca') {
+      } else if (level === 'barca' || level === 'groups') {
         parsed = rows.map(r => {
           const rawVal = r.value !== undefined ? r.value : r['value'];
           const value = typeof rawVal === 'number' ? rawVal : Number(rawVal || 0);
-          return { ts: String(r.timestamp || r['timestamp'] || ''), barca: r.barca || r['barca'], value: isNaN(value) ? 0 : value };
-        }).filter(x => x.ts && x.barca);
+          const key = level === 'barca'
+            ? (r.barca || r['barca'])
+            : (r.group || r['group'] || r.group_name || r['group_name']);
+          return { ts: String(r.timestamp || r['timestamp'] || ''), key, value: isNaN(value) ? 0 : value };
+        }).filter(x => x.ts && x.key);
       } else {
         parsed = rows.map(r => {
           const rawVal = r.total_value !== undefined ? r.total_value : r['total_value'];
@@ -307,8 +334,8 @@ function App() {
           if (!groups[key].ts || dayjs(item.ts).isAfter(dayjs(groups[key].ts))) {
             groups[key].ts = item.ts;
           }
-        } else if (level === 'barca') {
-          const name = item.barca;
+        } else if (level === 'barca' || level === 'groups') {
+          const name = item.key;
           groups[key] = groups[key] || { ts: null };
           if (!groups[key][name]) {
             groups[key][name] = { ts: item.ts, value: item.value };
@@ -330,7 +357,7 @@ function App() {
 
       // Convert groups to ordered array
       let out = [];
-      if (level === 'assets' || level === 'barca') {
+      if (level === 'assets' || level === 'barca' || level === 'groups') {
         // determine available series
         const seriesSet = new Set();
         Object.values(groups).forEach(g => {
@@ -431,10 +458,24 @@ function App() {
         >
           {loading ? <CircularProgress size={24} /> : "Update Prices & Show Distribution"}
         </Button>
+        <Button
+          variant="outlined"
+          color="secondary"
+          onClick={handleImportWallets}
+          disabled={importing}
+          sx={{ mb: 3 }}
+        >
+          {importing ? <CircularProgress size={20} /> : "Import Wallet CSV"}
+        </Button>
         {lastUpdate && (
           <Typography variant="body2" sx={{ color: "#aaa", alignSelf: "center" }}>
                 Last update: {dayjs(lastUpdate).subtract(3, 'hour').format("YYYY-MM-DD HH:mm:ss")}
               </Typography>
+        )}
+        {importStatus && (
+          <Typography variant="body2" sx={{ color: "#aaa", mb: 1 }}>
+            {importStatus}
+          </Typography>
         )}
 
         {/* Filters */}
@@ -846,6 +887,7 @@ function App() {
               <select value={dashboardLevel} onChange={e => { const v = e.target.value; setDashboardLevel(v); fetchHistory(v); }}>
                 <option value="totals">Totals</option>
                 <option value="barca">BARCA</option>
+                <option value="groups">Groups</option>
                 <option value="assets">Assets</option>
               </select>
               {(dashboardLevel === 'assets' || dashboardLevel === 'barca') && (

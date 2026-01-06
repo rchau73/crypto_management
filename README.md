@@ -67,6 +67,39 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 
    The backend will start at [http://127.0.0.1:3001](http://127.0.0.1:3001).
 
+### Database (SQLite) & migrations
+
+This project supports an optional local SQLite database for history and wallet allocation audit. The repository includes SQL migrations in the `migrations/` folder.
+
+1. Create a folder for the DB and initialize the schema:
+
+```bash
+mkdir -p data
+# apply the initial migration into a new SQLite file
+sqlite3 ./data/crypto.db < migrations/0001_create_history_tables.sql
+```
+
+2. Or set `DATABASE_URL` to a file path and let the app connect to it:
+
+```bash
+export DATABASE_URL=sqlite://./data/crypto.db
+```
+
+Notes:
+- The migrations create `history_assets`, `history_barca`, `history_groups`, `history_totals`, the append-only `wallet_allocations` ledger, and an `allocations` table for persisted computed payloads.
+- Convenience views power the API:
+  - `wallet_allocations_current` now aggregates every wallet row per symbol/group/BARCA (no more “last row wins” bugs).
+  - `asset_variance_history`, `barca_variance_history`, and `group_variance_history` expose the dashboard-ready history (value, current %, target %, deviation, value deviation).
+- Run `sqlx migrate run` (or start the backend once) whenever the `migrations/` folder changes so the database schema stays in sync.
+
+### Seeding `wallet_allocations`
+
+When the backend starts it checks whether `wallet_allocations_current` is empty and, if so, seeds it from `wallet_allocations.csv` (override the path via `WALLET_ALLOCATIONS_PATH`). You can also trigger the import manually:
+
+- CLI: `cargo run --bin import_wallet_allocations -- wallet_allocations.csv`
+- API: `curl -X POST http://127.0.0.1:3001/api/import_wallets -H "Content-Type: application/json" -d '{"path":"wallet_allocations.csv"}'`
+- UI: click the **Import Wallet CSV** button next to “Update Prices & Show Distribution”.
+
 5. **Test the API:**
 
    Visit [http://127.0.0.1:3001/api/allocations](http://127.0.0.1:3001/api/allocations) in your browser or use `curl` to see the JSON output.
@@ -102,9 +135,9 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 ### Backend
 
 1. **Rust API** (see `src/main.rs`)
-   - Reads wallet allocations from `wallet_allocations.csv`.
    - Reads BARCA targets from `wallet_barca.csv`.
-   - Serves `/api/allocations` with all computed data.
+   - Loads wallet positions from the SQLite view `wallet_allocations_current` (auto-seeded from `wallet_allocations.csv`, or import manually through the CLI/UI/API).
+   - Serves `/api/allocations` with the computed per-asset/per-group/BARCA breakdowns and persists every snapshot into SQLite for the dashboard.
 
 2. **Run the backend:**
    ```sh
@@ -114,6 +147,24 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 - Click **"Update Prices & Show Distribution"** in the frontend to fetch live prices and see your portfolio allocation.
 - The dashboard displays both per-asset and per-group allocation, with deviations highlighted.
 - To update your portfolio, edit `wallet_allocations.csv` and refresh the frontend.
+
+### Importing `wallet_allocations.csv` (manual)
+
+Wallet allocation changes are intentionally manual: edit `wallet_allocations.csv` in the repo root and run the importer to append an audit row into the DB. This avoids noisy duplicate rows when nothing actually changed.
+
+Run:
+
+```bash
+# ensure DATABASE_URL is set (default: sqlite://./data/crypto.db)
+export DATABASE_URL=sqlite://./data/crypto.db
+cargo run --bin import_wallet_allocations -- wallet_allocations.csv
+```
+
+This inserts one append-only row per CSV line into `wallet_allocations` (audit/history). Use the view to inspect current values:
+
+```bash
+sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
+```
 
 ---
 
@@ -151,62 +202,36 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 
 ---
 
-## New Endpoints & CSV History (Snapshots)
+## History API & Dashboard Data
 
-This project now stores historical snapshots every time prices are updated (when you click "Update Prices & Show Distribution"). The backend appends rows to three CSV files and exposes a simple API to read history.
+Every time `/api/allocations` runs (e.g., when you click “Update Prices & Show Distribution”) the backend now persists the computed snapshot directly into SQLite:
 
-- Endpoints
-   - `GET /api/allocations` — existing endpoint that computes current allocations and, as a side-effect, appends a historical snapshot to CSV files.
-   - `GET /api/history?level={totals|assets|barca}` — returns the historical rows for the requested level as JSON. Example:
-      - `/api/history?level=totals` returns `{ "level": "totals", "rows": [ ... ] }`
+- `history_assets` receives one row per asset (with target %, current %, deviation %, and USD value deviation computed in the database).
+- `history_groups` stores the per-group view that powers both the table and the dashboard.
+- `history_barca` and `history_totals` keep BARCA-level and total wallet timelines.
+- The derived views `asset_variance_history`, `group_variance_history`, and `barca_variance_history` are what `/api/history` serves to the frontend.
 
-- CSV files written (append-only)
-   - `history_assets.csv` — asset-level rows. Columns:
-      - `timestamp` (RFC3339 UTC)
-      - `symbol` (string)
-      - `group` (string)
-      - `barca` (string)
-      - `quantity` (number)
-      - `price` (number)
-      - `value` (number)
-      - `target_percent` (number)
+API:
+- `GET /api/allocations` — computes the latest allocation, persists the snapshot, and returns the live tables/charts.
+- `GET /api/history?level={totals|assets|barca|groups}` — streams the historical rows for the requested level. Assets and BARCA entries now include `deviation` and `value_deviation` fields for the variance dashboard.
 
-   - `history_barca.csv` — BARCA consolidated rows. Columns:
-      - `timestamp` (RFC3339 UTC)
-      - `barca` (string)
-      - `value` (number)
-      - `current_percent` (number)
+Example:
 
-   - `history_totals.csv` — totals per snapshot. Columns:
-      - `timestamp` (RFC3339 UTC)
-      - `total_value` (number)
+```bash
+curl -sS "http://127.0.0.1:3001/api/history?level=assets" | jq .
+```
 
-Notes:
-   - Files are appended in the server working directory by default. You can change these paths in the backend `AppState` if you want them stored elsewhere.
-   - Each invocation of `/api/allocations` writes the current computed rows to the CSVs. The write is best-effort (errors are logged) and does not block returning the allocations JSON.
+The frontend dashboard tab uses these APIs (with optional period bucketing) to plot totals, BARCA groups, asset symbols, or the new per-group series.
 
-- Example curl usage
-   - Trigger a price update (this also writes history):
-      ```sh
-      curl -sS http://127.0.0.1:3001/api/allocations | jq .
-      ```
+## Migrating from CSV to DB
 
-   - Read totals history:
-      ```sh
-      curl -sS "http://127.0.0.1:3001/api/history?level=totals" | jq .
-      ```
+Current behavior remains CSV-first: the app still writes CSV snapshots. The DB migration and import tool let you keep the CSV as the editable source-of-truth for wallet definitions while persisting snapshots and allocation audits in SQLite for queries, dashboards, and tests.
 
-   - Read asset history:
-      ```sh
-      curl -sS "http://127.0.0.1:3001/api/history?level=assets" | jq .
-      ```
+Planned next steps (optional):
 
-   - Read BARCA history:
-      ```sh
-      curl -sS "http://127.0.0.1:3001/api/history?level=barca" | jq .
-      ```
+- Wire `/api/allocations` to persist snapshots into the DB (instead of CSVs).
+- Add automated migration runner using `sqlx::migrate!` and CI checks.
 
-These CSV snapshots enable time-based dashboards (daily/weekly/monthly/quarter/year) and P&L calculations over time.
 
 
 ## License
