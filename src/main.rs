@@ -1,44 +1,41 @@
-use reqwest::{Client, Error as ReqwestError};
+use infra::sqlite::SqliteRepo;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use tokio;
-use dotenv::dotenv;
-use std::error::Error;
-use std::collections::HashMap;
-use std::sync::Arc;
-use axum::{
-    routing::get,
-    Router,
-    response::Json,
-};
-use serde_json::json;
-use std::net::SocketAddr;
-use tower_http::cors::{self, Any, CorsLayer};
+mod infra;
 use axum::http::StatusCode;
-use tracing::{info, debug, error, warn};
+use axum::{Router, response::Json, routing::get};
+use dotenv::dotenv;
+use serde_json::json;
+use std::error::Error;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
+use tracing::{error, info, warn};
 
-mod service;
-use crate::service::compute_allocations;
-mod csv_store;
 mod api_client;
+mod csv_store;
 use crate::api_client::{CryptoProvider, ReqwestCryptoProvider};
+use crate::domain::repository::HistoryRepo;
+mod usecases;
+use usecases::allocations_service::AllocationsService;
+use usecases::history_service::HistoryService;
+mod domain;
 use axum::extract::State as AxumState;
 use axum::extract::State;
-mod csv_history;
-use crate::csv_history::{append_asset_snapshot, append_barca_snapshot, append_totals_snapshot, read_history_csv};
-use chrono::Utc;
+// CSV history module kept for legacy utilities (no fallback used)
+// mod csv_history; // legacy CSV helpers removed from runtime flows
 use axum::extract::Query;
+use chrono::Utc;
 use serde::Deserialize as SerdeDeserialize;
-use std::path::PathBuf;
 
 #[derive(Clone)]
 struct AppState {
     #[allow(dead_code)]
     provider: Arc<dyn CryptoProvider>,
-    history_assets: String,
-    history_barca: String,
-    history_totals: String,
+    // DB-backed repo for history and wallet ledger
+    history_repo: std::sync::Arc<crate::infra::sqlite::repo::SqliteRepo>,
 }
-use crate::csv_store::AllocationStore;
 
 // Define the structure of the API response
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -85,165 +82,75 @@ struct PriceInfo {
     tvl: Option<f64>,
 }
 
-#[derive(Serialize)]
-struct CryptoCsv {
-    symbol: String,
-    id: u32,
-    name: String,
-    tvl_ratio: Option<f64>,
-    tvl_usd: Option<f64>,
-    price: f64,
-    volume_24h: f64,
-    percent_change_24h: f64,
-    percent_change_7d: f64,
-    market_cap: f64,
-    fdv: f64,
-    tvl: Option<f64>,
-}
-
-// Struct for wallet allocations with group
-#[derive(Debug, Deserialize)]
-struct WalletAllocation {
-    symbol: String,
-    group: String,
-    barca: String, // <-- this must match your CSV!
-    target_percent: f64,
-    current_quantity: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct BarcaAllocation {
-    market: String,
-    group: String,
-    target_percent: f64,
-}
-
-#[derive(Deserialize)]
-struct Allocation {
-    symbol: String,
-    group: String,
-    barca: String,
-    target_percent: f64,
-    current_quantity: f64,
-    #[serde(default)]
-    comments: Option<String>, // This will be ignored in all calculations
-}
-
-
-// Function to fetch cryptocurrency data
-async fn fetch_crypto_data(api_key: &str) -> Result<Vec<CryptoData>, ReqwestError> {
-    let client = Client::new();
-    let url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest";
-
-    let mut params = std::collections::HashMap::new();
-    params.insert("limit", "1000");
-
-    let response = client.get(url)
-        .header("X-CMC_PRO_API_KEY", api_key)
-        .header("Accept", "application/json")
-        .query(&params)
-        .send()
-        .await?;
-
-    // Deserialize JSON into our struct
-    let parsed_response: ApiResponse = response.json().await?;
-    info!(status = ?parsed_response.status, fetched = parsed_response.data.len());
-    debug!(data = ?parsed_response.data);
-    Ok(parsed_response.data)
-}
-
 // Read wallet allocations from CSV
- 
- 
+
 #[tracing::instrument(skip(state))]
-async fn api_allocations(State(state): AxumState<AppState>) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+async fn api_allocations(
+    State(state): AxumState<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     dotenv().ok();
     let api_key = match std::env::var("API_KEY") {
         Ok(k) => k,
         Err(_) => {
             error!("Missing API_KEY environment variable");
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Missing API_KEY"}))));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Missing API_KEY"})),
+            ));
         }
     };
 
-    let current_market = std::env::var("CURRENT_MARKET").unwrap_or_else(|_| "BullMarket".to_string());
+    let current_market =
+        std::env::var("CURRENT_MARKET").unwrap_or_else(|_| "BullMarket".to_string());
 
-    let store = crate::csv_store::FileCsvStore;
-    let allocations = match store.read_wallet_allocations("wallet_allocations.csv") {
-        Ok(a) => a,
+    // Use AllocationsService to fetch cryptos, read barca targets, compute allocations and persist allocation record
+    let alloc_svc = AllocationsService::new(state.provider.clone(), state.history_repo.clone());
+    let result = match alloc_svc
+        .compute_and_record(&api_key, &current_market)
+        .await
+    {
+        Ok(r) => r,
         Err(e) => {
-            error!(error = %e, "Failed reading wallet allocations");
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed reading wallet allocations: {}", e)}))));
+            error!(error = %e, "Failed computing allocations");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed computing allocations: {}", e)})),
+            ));
         }
     };
 
-    let cryptos = match state.provider.fetch_latest(&api_key).await {
-        Ok(c) => c,
-        Err(e) => {
-            error!(error = %e, "Failed fetching crypto data");
-            return Err((StatusCode::BAD_GATEWAY, Json(json!({"error": format!("Failed fetching crypto data: {}", e)}))));
-        }
-    };
-
-    let barca_targets = match store.read_barca_allocations("wallet_barca.csv", &current_market) {
-        Ok(b) => b,
-        Err(e) => {
-            error!(error = %e, "Failed reading barca allocations");
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed reading barca allocations: {}", e)}))));
-        }
-    };
-
-    let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+    // `result` already computed by AllocationsService; keep using it here
     // Persist historical snapshots (append) using configured paths
     let ts = Utc::now();
-    let per_asset = result.get("per_asset").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let per_barca_actual = result.get("per_barca_actual").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let per_asset = result
+        .get("per_asset")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let per_group = result
+        .get("per_group")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let per_barca = result
+        .get("per_barca")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     // compute total
-    let total_value = per_asset.iter().map(|a| a.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0)).sum::<f64>();
-    // Attempt to persist snapshots and log results for diagnostics
-    match append_asset_snapshot(&ts, &per_asset, &state.history_assets) {
-        Ok(_) => info!(path = %state.history_assets, "Appended asset snapshot"),
-        Err(e) => error!(path = %state.history_assets, error = %e, "Failed to append asset snapshot"),
-    }
-    match append_barca_snapshot(&ts, &per_barca_actual, &state.history_barca) {
-        Ok(_) => info!(path = %state.history_barca, "Appended barca snapshot"),
-        Err(e) => error!(path = %state.history_barca, error = %e, "Failed to append barca snapshot"),
-    }
-    match append_totals_snapshot(&ts, total_value, &state.history_totals) {
-        Ok(_) => info!(path = %state.history_totals, "Appended totals snapshot"),
-        Err(e) => error!(path = %state.history_totals, error = %e, "Failed to append totals snapshot"),
-    }
-    // Provide diagnostic debug info with absolute paths and append status
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let abs_assets = cwd.join(&state.history_assets).to_string_lossy().to_string();
-    let abs_barca = cwd.join(&state.history_barca).to_string_lossy().to_string();
-    let abs_totals = cwd.join(&state.history_totals).to_string_lossy().to_string();
+    let total_value = per_asset
+        .iter()
+        .map(|a| a.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .sum::<f64>();
+    // Persist snapshots into DB via use-case/service (DB-only; CSV legacy persistence removed)
+    let history_svc =
+        crate::usecases::history_service::HistoryService::new(state.history_repo.clone());
+    history_svc
+        .persist_snapshots(ts, &per_asset, &per_group, &per_barca, total_value)
+        .await;
 
-    // Re-run append calls but capture results for response (we already logged above; re-check return values)
-    let assets_status = match append_asset_snapshot(&ts, &per_asset, &state.history_assets) {
-        Ok(_) => (true, None::<String>),
-        Err(e) => (false, Some(format!("{}", e))),
-    };
-    let barca_status = match append_barca_snapshot(&ts, &per_barca_actual, &state.history_barca) {
-        Ok(_) => (true, None::<String>),
-        Err(e) => (false, Some(format!("{}", e))),
-    };
-    let totals_status = match append_totals_snapshot(&ts, total_value, &state.history_totals) {
-        Ok(_) => (true, None::<String>),
-        Err(e) => (false, Some(format!("{}", e))),
-    };
-
-    let mut resp = result;
-    let debug = json!({
-        "cwd": cwd.to_string_lossy().to_string(),
-        "assets": {"path": state.history_assets, "abs_path": abs_assets, "ok": assets_status.0, "error": assets_status.1},
-        "barca": {"path": state.history_barca, "abs_path": abs_barca, "ok": barca_status.0, "error": barca_status.1},
-        "totals": {"path": state.history_totals, "abs_path": abs_totals, "ok": totals_status.0, "error": totals_status.1},
-    });
-    if let serde_json::Value::Object(ref mut m) = resp {
-        m.insert("debug".to_string(), debug);
-    }
-    Ok(Json(resp))
+    // Return computed allocations (no CSV debug fields)
+    Ok(Json(result))
 }
 
 #[derive(SerdeDeserialize)]
@@ -251,14 +158,42 @@ struct HistoryQuery {
     level: Option<String>,
 }
 
-async fn api_history(Query(q): Query<HistoryQuery>) -> Json<serde_json::Value> {
+async fn api_history(
+    State(state): AxumState<AppState>,
+    Query(q): Query<HistoryQuery>,
+) -> Json<serde_json::Value> {
     let level = q.level.unwrap_or_else(|| "totals".to_string());
-    let out = match level.as_str() {
-        "assets" => read_history_csv("history_assets.csv").unwrap_or_default(),
-        "barca" => read_history_csv("history_barca.csv").unwrap_or_default(),
-        _ => read_history_csv("history_totals.csv").unwrap_or_default(),
-    };
-    Json(json!({"level": level, "rows": out}))
+    let svc = HistoryService::new(state.history_repo.clone());
+    match svc.fetch_history(&level).await {
+        Ok(v) => Json(v),
+        Err(e) => {
+            error!(error = %e, "DB history fetch failed");
+            // DB-only mode: return error JSON
+            Json(json!({"error": format!("Failed to fetch history from DB: {}", e)}))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ImportPayload {
+    path: Option<String>,
+}
+
+async fn import_wallets_handler(
+    State(state): AxumState<AppState>,
+    axum::extract::Json(payload): axum::extract::Json<ImportPayload>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let path = payload
+        .path
+        .unwrap_or_else(|| "wallet_allocations.csv".to_string());
+    let svc = HistoryService::new(state.history_repo.clone());
+    match svc.import_wallet_allocations_from_path(&path).await {
+        Ok(count) => Ok(Json(json!({"imported": count}))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed import: {}", e)})),
+        )),
+    }
 }
 
 #[tokio::main]
@@ -268,28 +203,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt::init();
 
-    let backend = async {
-            // initialize provider and app state
-            let provider = Arc::new(ReqwestCryptoProvider::new());
-            let app_state = AppState {
-                provider: provider.clone(),
-                history_assets: "history_assets.csv".to_string(),
-                history_barca: "history_barca.csv".to_string(),
-                history_totals: "history_totals.csv".to_string(),
-            };
+    // DB pool and repo
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://data/crypto.db".to_string());
+    let pool = SqlitePool::connect(&database_url)
+        .await
+        .expect("failed to connect to db");
 
-            let app = Router::new()
-        .route("/api/allocations", get(api_allocations))
-        .route("/api/history", get(api_history))
-        .with_state(app_state)
-        .layer(CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any));
+    // Run migrations (if any) from ./migrations
+    if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
+        error!(error = %e, "Failed to run migrations");
+    } else {
+        info!("Migrations applied");
+    }
+
+    let history_repo = std::sync::Arc::new(SqliteRepo::new(pool.clone()));
+    ensure_wallet_allocations_seeded(history_repo.clone()).await;
+
+    let backend_repo = history_repo.clone();
+    let backend = async move {
+        // initialize provider and app state
+        let provider = Arc::new(ReqwestCryptoProvider::new());
+        let app_state = AppState {
+            provider: provider.clone(),
+            history_repo: backend_repo.clone(),
+        };
+
+        let app = Router::new()
+            .route("/api/allocations", get(api_allocations))
+            .route("/api/history", get(api_history))
+            .route(
+                "/api/import_wallets",
+                axum::routing::post(import_wallets_handler),
+            )
+            .with_state(app_state)
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any),
+            );
 
         serve(app, 3001).await;
     };
-    
+
     tokio::join!(backend);
 
     Ok(())
@@ -314,6 +271,36 @@ async fn serve(app: Router, port: u16) {
             }
         }
     }
-    error!("Failed to bind to any port in range {}..{}", port, port + max_attempts - 1);
+    error!(
+        "Failed to bind to any port in range {}..{}",
+        port,
+        port + max_attempts - 1
+    );
 }
 
+async fn ensure_wallet_allocations_seeded(history_repo: Arc<SqliteRepo>) {
+    match history_repo.fetch_current_wallet_allocations().await {
+        Ok(rows) if rows.is_empty() => {
+            let path = std::env::var("WALLET_ALLOCATIONS_PATH")
+                .unwrap_or_else(|_| "wallet_allocations.csv".to_string());
+            let history_svc = HistoryService::new(history_repo.clone());
+            match history_svc.import_wallet_allocations_from_path(&path).await {
+                Ok(imported) => info!(
+                    path = %path,
+                    imported,
+                    "Bootstrapped wallet_allocations from CSV"
+                ),
+                Err(e) => warn!(
+                    path = %path,
+                    error = %e,
+                    "Failed to bootstrap wallet allocations from CSV"
+                ),
+            }
+        }
+        Ok(_) => {}
+        Err(e) => warn!(
+            error = %e,
+            "Unable to inspect wallet allocations before bootstrap"
+        ),
+    }
+}
