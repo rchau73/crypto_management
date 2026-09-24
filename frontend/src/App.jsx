@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   CssBaseline, // <-- Add this import
   Container,
@@ -35,6 +35,48 @@ function formatNumber(n) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Helper for formatting prices with 4 decimals
+function formatPrice(n) {
+  if (typeof n !== "number" || isNaN(n)) return "-";
+  return n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+}
+
+const USD_AXIS_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+  notation: "compact",
+  compactDisplay: "short",
+});
+
+function formatUsdAxisTick(value) {
+  if (typeof value !== "number" || isNaN(value)) return "";
+  return USD_AXIS_FORMATTER.format(value);
+}
+
+function computeYAxisDomain(rows, keys) {
+  if (!Array.isArray(rows) || rows.length === 0) return ["dataMin", "dataMax"];
+  if (!Array.isArray(keys) || keys.length === 0) return ["dataMin", "dataMax"];
+  let min = Infinity;
+  let max = -Infinity;
+  rows.forEach((row) => {
+    keys.forEach((key) => {
+      const raw = row[key];
+      const value = typeof raw === "number" ? raw : Number(raw);
+      if (isNaN(value)) return;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    });
+  });
+  if (!isFinite(min) || !isFinite(max)) return ["dataMin", "dataMax"];
+  if (min === max) {
+    const pad = min === 0 ? 1 : Math.abs(min) * 0.05;
+    return [min - pad, max + pad];
+  }
+  const pad = (max - min) * 0.05;
+  return [min - pad, max + pad];
+}
+
 // Helper to sum target_percent for a given table's data
 function getTotalTargetPercent(rows) {
   return rows.reduce((sum, row) => {
@@ -58,16 +100,28 @@ function App() {
   const [barcaFilter, setBarcaFilter] = useState("");
 
   const [page, setPage] = useState(1);
+  const [symbolPage, setSymbolPage] = useState(1);
   const pageSize = 10;
 
-  // Sorting state for Per-Asset Table only
+  // Sorting state for Per-Asset Table
   const [sortConfig, setSortConfig] = useState({ key: "value", direction: "desc" });
+  // Sorting state for Per-Asset Total (Symbol) Table
+  const [symbolSortConfig, setSymbolSortConfig] = useState({ key: "value", direction: "desc" });
 
   // Sorting handler
   const handleSort = (key) => {
     setSortConfig((prev) => {
       if (prev.key === key) {
         // Toggle direction
+        return { key, direction: prev.direction === "asc" ? "desc" : "asc" };
+      }
+      return { key, direction: "asc" };
+    });
+  };
+
+  const handleSymbolSort = (key) => {
+    setSymbolSortConfig((prev) => {
+      if (prev.key === key) {
         return { key, direction: prev.direction === "asc" ? "desc" : "asc" };
       }
       return { key, direction: "asc" };
@@ -125,6 +179,47 @@ function App() {
       }
       // String comparison
       return sortConfig.direction === "asc"
+        ? String(aValue).localeCompare(String(bValue))
+        : String(bValue).localeCompare(String(aValue));
+    });
+  }
+
+  function getSortedSymbolRows(rows) {
+    if (!symbolSortConfig.key) return rows;
+    return [...rows].sort((a, b) => {
+      let aValue;
+      let bValue;
+
+      if (symbolSortConfig.key === "value_deviation") {
+        const aTargetValue = totalWalletValue * (a.target_percent / 100);
+        const bTargetValue = totalWalletValue * (b.target_percent / 100);
+        aValue = a.value - aTargetValue;
+        bValue = b.value - bTargetValue;
+      } else if (symbolSortConfig.key === "dca") {
+        const aTargetValue = totalWalletValue * (a.target_percent / 100);
+        const bTargetValue = totalWalletValue * (b.target_percent / 100);
+        const aValueDeviation = a.value - aTargetValue;
+        const bValueDeviation = b.value - bTargetValue;
+        aValue = Math.abs(aValueDeviation) * 0.3;
+        bValue = Math.abs(bValueDeviation) * 0.3;
+      } else if (symbolSortConfig.key === "current_percent") {
+        aValue = totalWalletValue > 0 ? (a.value / totalWalletValue) * 100 : 0;
+        bValue = totalWalletValue > 0 ? (b.value / totalWalletValue) * 100 : 0;
+      } else if (symbolSortConfig.key === "deviation") {
+        const aCurrentPercent = totalWalletValue > 0 ? (a.value / totalWalletValue) * 100 : 0;
+        const bCurrentPercent = totalWalletValue > 0 ? (b.value / totalWalletValue) * 100 : 0;
+        aValue = aCurrentPercent - a.target_percent;
+        bValue = bCurrentPercent - b.target_percent;
+      } else {
+        aValue = a[symbolSortConfig.key];
+        bValue = b[symbolSortConfig.key];
+      }
+
+      if (aValue === undefined || bValue === undefined) return 0;
+      if (typeof aValue === "number" && typeof bValue === "number") {
+        return symbolSortConfig.direction === "asc" ? aValue - bValue : bValue - aValue;
+      }
+      return symbolSortConfig.direction === "asc"
         ? String(aValue).localeCompare(String(bValue))
         : String(bValue).localeCompare(String(aValue));
     });
@@ -229,14 +324,69 @@ function App() {
   // Calculate filtered total value (sum of only filtered assets)  
   const filteredTotalValue = filteredAllocations.reduce((sum, row) => sum + (typeof row.value === "number" ? row.value : 0), 0);
 
-  // Only sort Per-Asset Table
+  const symbolAllocations = useMemo(() => {
+    const bySymbol = new Map();
+    filteredAllocations.forEach((row) => {
+      const symbol = row.symbol;
+      if (!symbol) return;
+      const qty = typeof row.current_quantity === "number" ? row.current_quantity : Number(row.current_quantity || 0);
+      const value = typeof row.value === "number" ? row.value : Number(row.value || 0);
+      const target = typeof row.target_percent === "number" ? row.target_percent : Number(row.target_percent || 0);
+      const price = typeof row.price === "number" ? row.price : Number(row.price || 0);
+
+      let entry = bySymbol.get(symbol);
+      if (!entry) {
+        entry = {
+          symbol,
+          price: 0,
+          current_quantity: 0,
+          value: 0,
+          target_percent: 0,
+          last_price: 0,
+        };
+        bySymbol.set(symbol, entry);
+      }
+
+      entry.current_quantity += isNaN(qty) ? 0 : qty;
+      entry.value += isNaN(value) ? 0 : value;
+      entry.target_percent += isNaN(target) ? 0 : target;
+      if (!isNaN(price) && price > 0) entry.last_price = price;
+    });
+
+    const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
+    const relevantTotalValue = isFiltered ? filteredTotalValue : totalWalletValue;
+
+    return Array.from(bySymbol.values()).map((entry) => {
+      const price = entry.current_quantity > 0
+        ? entry.value / entry.current_quantity
+        : entry.last_price || 0;
+      const current_percent = relevantTotalValue > 0 ? (entry.value / relevantTotalValue) * 100 : 0;
+      const deviation = current_percent - entry.target_percent;
+      return {
+        symbol: entry.symbol,
+        price,
+        current_quantity: entry.current_quantity,
+        value: entry.value,
+        target_percent: entry.target_percent,
+        current_percent,
+        deviation,
+      };
+    });
+  }, [filteredAllocations, filteredTotalValue, totalWalletValue, assetFilter, groupFilter, barcaFilter]);
+
+  // Sort Per-Asset Table
   const sortedAllocations = getSortedRows(filteredAllocations);
   const totalPages = Math.ceil(sortedAllocations.length / pageSize);
   const paginatedAllocations = sortedAllocations.slice((page - 1) * pageSize, page * pageSize);
 
+  const sortedSymbolAllocations = getSortedSymbolRows(symbolAllocations);
+  const symbolTotalPages = Math.ceil(sortedSymbolAllocations.length / pageSize);
+  const paginatedSymbolAllocations = sortedSymbolAllocations.slice((symbolPage - 1) * pageSize, symbolPage * pageSize);
+
   // Reset to page 1 whenever a filter changes
   React.useEffect(() => {
     setPage(1);
+    setSymbolPage(1);
   }, [assetFilter, groupFilter, barcaFilter]);
 
   // Tab state
@@ -251,6 +401,12 @@ function App() {
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState(null);
   const [dashboardRaw, setDashboardRaw] = useState(null);
+  const dashboardYAxisDomain = useMemo(() => {
+    const keys = dashboardLevel === "totals"
+      ? ["value"]
+      : (selectedSeries.length > 0 ? selectedSeries : dashboardSeries);
+    return computeYAxisDomain(dashboardData, keys);
+  }, [dashboardData, dashboardLevel, dashboardSeries, selectedSeries]);
 
   // Fetch historical data for dashboard
   const fetchHistory = async (level = dashboardLevel) => {
@@ -416,7 +572,7 @@ function App() {
 
   useEffect(() => {
     // Only fetch history when Dashboard tab is active to avoid early crashes on load
-    if (tab === 3) {
+    if (tab === 4) {
       fetchHistory(dashboardLevel);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -508,6 +664,7 @@ function App() {
         {/* Tabs */}
         <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
           <Tab label="Per-Asset Table" />
+          <Tab label="Per-Asset Total Table" />
           <Tab label="Per-Group Table" />
           <Tab label="BARCA Actual Table" />
           <Tab label="Dashboard" />
@@ -613,7 +770,7 @@ function App() {
                         <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap" }}>{row.symbol}</TableCell>
                         <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }} title={row.group}>{row.group}</TableCell>
                         <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }} title={row.barca}>{row.barca}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.price)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatPrice(row.price)}</TableCell>
                         <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.current_quantity)}</TableCell>
                         <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>${formatNumber(row.value)}</TableCell>
                         <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.target_percent)}%</TableCell>
@@ -671,8 +828,159 @@ function App() {
           </Box>
         )}
 
+        {/* Per-Asset Total Table (Grouped by Symbol) */}
+        {tab === 1 && symbolAllocations.length > 0 && (
+          <Box>
+            <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
+              Per-Asset Total Allocation (All Groups/BARCA)
+              <span style={{ color: "#00C49F", fontWeight: "normal", marginLeft: 16, fontSize: 14 }}>
+                Total Target %: {formatNumber(getTotalTargetPercent(symbolAllocations))}%
+                {(assetFilter !== "" || groupFilter !== "" || barcaFilter !== "") && (
+                  <span style={{ color: "#FFBB28", marginLeft: 8 }}>
+                    (Filtered Total: ${formatNumber(filteredTotalValue)})
+                  </span>
+                )}
+              </span>
+            </Typography>
+            <Typography variant="body2" sx={{ color: "#aaa", mb: 1 }}>
+              Grouped by symbol; Group and BARCA columns are ignored in this view.
+            </Typography>
+            <TableContainer component={Paper} sx={{ width: "100%" }}>
+              <Table sx={{ width: "100%", tableLayout: "auto" }}>
+                <TableHead>
+                  <TableRow>
+                    {[
+                      { key: "symbol", label: "Symbol" },
+                      { key: "price", label: "Price", align: "right" },
+                      { key: "current_quantity", label: "Qty", align: "right" },
+                      { key: "value", label: "Value", align: "right" },
+                      { key: "target_percent", label: "Target %", align: "right" },
+                      { key: "current_percent", label: "Current %", align: "right" },
+                      { key: "deviation", label: "Deviation", align: "right" },
+                      { key: "value_deviation", label: "Value Deviation", align: "right" },
+                      { key: "dca", label: "DCA", align: "right" },
+                    ].map((col) => (
+                      <TableCell
+                        key={col.key}
+                        align={col.align || "left"}
+                        sx={{
+                          cursor: "pointer",
+                          fontWeight: "bold",
+                          fontSize: 12,
+                          width: col.key === "symbol" ? "10%" :
+                                 col.key === "price" ? "12%" :
+                                 col.key === "current_quantity" ? "10%" :
+                                 col.key === "value" ? "14%" :
+                                 col.key === "target_percent" ? "10%" :
+                                 col.key === "current_percent" ? "10%" :
+                                 col.key === "deviation" ? "12%" :
+                                 col.key === "value_deviation" ? "12%" :
+                                 col.key === "dca" ? "10%" : "auto",
+                          padding: "8px 4px",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis"
+                        }}
+                        onClick={() => handleSymbolSort(col.key)}
+                      >
+                        <Button
+                          size="small"
+                          variant="text"
+                          sx={{
+                            color: symbolSortConfig.key === col.key ? "#00C49F" : "inherit",
+                            minWidth: 0,
+                            fontWeight: "bold",
+                            fontSize: 12,
+                            textTransform: "none",
+                            p: 0,
+                          }}
+                        >
+                          {col.label}
+                          {symbolSortConfig.key === col.key ? (
+                            symbolSortConfig.direction === "asc" ? " ▲" : " ▼"
+                          ) : ""}
+                        </Button>
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {paginatedSymbolAllocations.map((row, idx) => {
+                    const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
+                    const relevantTotalValue = isFiltered ? filteredTotalValue : totalWalletValue;
+                    const recalculatedCurrentPercent = relevantTotalValue > 0 ? (row.value / relevantTotalValue) * 100 : 0;
+                    const recalculatedDeviation = recalculatedCurrentPercent - row.target_percent;
+                    const targetValue = relevantTotalValue * (row.target_percent / 100);
+                    const valueDeviation = row.value - targetValue;
+                    const dca = Math.abs(valueDeviation) * 0.3;
+                    const relativeDeviation = row.target_percent > 0
+                      ? Math.abs(recalculatedDeviation) / row.target_percent
+                      : 0;
+                    const isDeviationRed = Math.abs(recalculatedDeviation) > 1;
+                    const isDeviationOrange = !isDeviationRed && relativeDeviation >= 0.20;
+                    return (
+                      <TableRow key={row.symbol || idx}>
+                        <TableCell sx={{ fontSize: 10, padding: "8px 4px", whiteSpace: "nowrap" }}>{row.symbol}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatPrice(row.price)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.current_quantity)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>${formatNumber(row.value)}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(row.target_percent)}%</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>{formatNumber(recalculatedCurrentPercent)}%</TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{
+                            color: isDeviationRed ? "error.main" : isDeviationOrange ? "warning.main" : "inherit",
+                            fontWeight: isDeviationRed || isDeviationOrange ? "bold" : "normal",
+                            fontSize: 10,
+                            padding: "8px 4px",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {recalculatedDeviation > 0 ? "+" : ""}
+                          {formatNumber(recalculatedDeviation)}%
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>
+                          {valueDeviation > 0 ? "+$" : valueDeviation < 0 ? "-$" : "$"}
+                          {formatNumber(Math.abs(valueDeviation))}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontSize: 10, padding: "8px 4px" }}>
+                          ${formatNumber(dca)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            {/* Pagination controls */}
+            <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", mt: 2 }}>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => setSymbolPage(symbolPage - 1)}
+                disabled={symbolPage === 1}
+                sx={{ mr: 1 }}
+              >
+                Prev
+              </Button>
+              <Typography sx={{ fontSize: 12 }}>
+                Page {symbolPage} of {symbolTotalPages}
+              </Typography>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => setSymbolPage(symbolPage + 1)}
+                disabled={symbolPage === symbolTotalPages}
+                sx={{ ml: 1 }}
+              >
+                Next
+              </Button>
+            </Box>
+          </Box>
+        )}
+
         {/* Per-Group Table */}
-        {tab === 1 && groupAllocations.length > 0 && (
+        {tab === 2 && groupAllocations.length > 0 && (
           <Box>
             <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
               Per-Group Allocation
@@ -761,7 +1069,7 @@ function App() {
         )}
 
         {/* BARCA Actual Allocation Table */}
-        {tab === 2 && barcaActualAllocations.length > 0 && (
+        {tab === 3 && barcaActualAllocations.length > 0 && (
           <Box>
             <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
               Per-BARCA Actual Allocation
@@ -878,7 +1186,7 @@ function App() {
         )}
 
         {/* Dashboard Tab */}
-        {tab === 3 && (
+        {tab === 4 && (
           <Box>
             <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
               Historical Dashboard
@@ -928,7 +1236,7 @@ function App() {
                   <LineChart data={dashboardData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                     <CartesianGrid stroke="#333" strokeDasharray="3 3" />
                     <XAxis dataKey="period" />
-                    <YAxis />
+                    <YAxis domain={dashboardYAxisDomain} tickFormatter={formatUsdAxisTick} />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
                     {dashboardLevel === 'totals' ? (
