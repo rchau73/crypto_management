@@ -12,7 +12,7 @@ struct BarcaCsv {
     target_percent: f64,
 }
 
-pub trait AllocationStore {
+pub trait AllocationStore: Send + Sync {
     #[allow(dead_code)]
     fn read_wallet_allocations(
         &self,

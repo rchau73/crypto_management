@@ -1,6 +1,20 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+/// A single asset's current market data, as needed by the allocation
+/// use case. Deliberately independent of any external API's wire format —
+/// `infra::coinmarketcap` maps CoinMarketCap's response shape into this.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Crypto {
+    pub symbol: String,
+    pub price: f64,
+    pub market_cap: f64,
+    pub fdv: f64,
+    pub volume_24h: f64,
+    pub percent_change_24h: f64,
+    pub percent_change_7d: f64,
+}
+
 // Asset snapshot row (history_assets)
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct AssetSnapshot {

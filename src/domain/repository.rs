@@ -36,6 +36,8 @@ pub trait HistoryRepo: Send + Sync {
     // Wallet allocations ledger (append-only)
     // Insert a new wallet allocation record (do not delete or update existing rows)
     async fn insert_wallet_allocation(&self, wa: &WalletAllocation) -> RepoResult<()>;
+    // Replace wallet allocations from CSV (source of truth)
+    async fn clear_wallet_allocations(&self) -> RepoResult<()>;
     // Fetch latest/current wallet allocations (one row per symbol representing the most recent entry)
     async fn fetch_current_wallet_allocations(&self) -> RepoResult<Vec<WalletAllocation>>;
     // Fetch audit/history for a given symbol (all rows for symbol ordered by created_at desc)

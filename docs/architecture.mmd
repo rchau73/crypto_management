@@ -1,0 +1,40 @@
+flowchart TD
+    subgraph MAIN["Composition Root — src/main.rs"]
+        H1["Axum HTTP handlers\n(api_allocations, api_history, import_wallets_handler)"]
+    end
+
+    subgraph USECASES["src/usecases/ — business logic"]
+        CA["compute_allocations\n(pure function, no I/O)"]
+        AS["AllocationsService"]
+        HS["HistoryService"]
+    end
+
+    subgraph DOMAIN["src/domain/ — models & ports"]
+        MODELS["models.rs\nCrypto, WalletAllocation, snapshot rows"]
+        REPO_PORT["repository.rs\nHistoryRepo trait"]
+        MD_PORT["market_data.rs\nCryptoProvider trait"]
+    end
+
+    subgraph INFRA["src/infra/ — adapters"]
+        SQLITE["sqlite/repo.rs\nSqliteRepo"]
+        CMC["coinmarketcap.rs\nReqwestCryptoProvider"]
+    end
+
+    H1 -->|calls| AS
+    H1 -->|calls| HS
+    AS -->|calls| CA
+    AS -->|depends on| MD_PORT
+    AS -->|depends on| REPO_PORT
+    HS -->|depends on| REPO_PORT
+    CA -->|uses| MODELS
+
+    SQLITE -.->|implements| REPO_PORT
+    CMC -.->|implements| MD_PORT
+
+    MAIN -->|constructs & injects| SQLITE
+    MAIN -->|constructs & injects| CMC
+
+    style DOMAIN fill:#1f2937,stroke:#93c5fd,color:#e5e7eb
+    style USECASES fill:#1e293b,stroke:#86efac,color:#e5e7eb
+    style INFRA fill:#1e293b,stroke:#fca5a5,color:#e5e7eb
+    style MAIN fill:#1e293b,stroke:#fcd34d,color:#e5e7eb

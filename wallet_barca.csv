@@ -4,8 +4,8 @@ BullMarket,Altcoins,15.00
 BullMarket,RendaPassiva,15.00
 BullMarket,Caixa,19.00
 BullMarket,Aprender,1.00
-BearMarket,Base,50.00
-BearMarket,Altcoins,0.00
+BearMarket,Base,40.00
+BearMarket,Altcoins,10.00
 BearMarket,RendaPassiva,20.00
 BearMarket,Caixa,30.00
 BearMarket,Aprender,0.00
