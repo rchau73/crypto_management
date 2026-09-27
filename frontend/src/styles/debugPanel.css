@@ -1,0 +1,19 @@
+.debug-panel {
+  margin-top: 16px;
+  background-color: #0b0b0b;
+  color: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.debug-panel__title {
+  font-weight: 700;
+}
+
+.debug-panel__pre {
+  white-space: pre-wrap;
+  font-size: 11px;
+  margin: 4px 0 0;
+}
