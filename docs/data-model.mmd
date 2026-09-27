@@ -1,0 +1,130 @@
+%% SQLite has no FOREIGN KEY constraints in this schema (see migrations/*.sql) —
+%% every relationship below is logical/derived (joined by symbol or timestamp
+%% in application code or in a view), not an enforced FK. Drawn dotted for that reason.
+erDiagram
+    CRYPTO {
+        string symbol "live price feed, not persisted"
+        float price
+        float market_cap
+        float fdv
+        float volume_24h
+        float percent_change_24h
+        float percent_change_7d
+    }
+
+    WALLET_ALLOCATIONS {
+        int id PK
+        string symbol
+        string group_name "nullable"
+        string barca "nullable"
+        float target_percent "nullable"
+        float current_quantity "nullable"
+        float last_price "nullable"
+        string notes "nullable"
+        string created_at "append-only: every edit is a new row"
+    }
+
+    WALLET_ALLOCATIONS_CURRENT {
+        string symbol "view: latest row per symbol+group+barca"
+        string group_name
+        string barca
+        float target_percent "MAX() per group"
+        float current_quantity "SUM() per group"
+        float last_price
+        string created_at
+    }
+
+    ALLOCATIONS {
+        int id PK
+        string computed_at
+        json payload "full per_asset/per_group/per_barca result"
+        string created_at
+    }
+
+    HISTORY_ASSETS {
+        int id PK
+        string timestamp "paired with symbol: UNIQUE(timestamp, symbol)"
+        string symbol
+        string group_name "nullable"
+        string barca "nullable"
+        float price "nullable"
+        float current_quantity "nullable"
+        float value "nullable"
+        float target_percent "nullable"
+        float current_percent "nullable"
+        float market_cap "nullable"
+        float fdv "nullable"
+        float volume_24h "nullable"
+        float percent_change_24h "nullable"
+        float percent_change_7d "nullable"
+        json extra "nullable"
+        string created_at
+    }
+
+    HISTORY_GROUPS {
+        int id PK
+        string timestamp "UNIQUE(timestamp, group_name)"
+        string group_name
+        float value "nullable"
+        float current_percent "nullable"
+        float target_percent "nullable"
+        json extra "nullable"
+        string created_at
+    }
+
+    HISTORY_BARCA {
+        int id PK
+        string timestamp "UNIQUE(timestamp, barca)"
+        string barca
+        float value "nullable"
+        float current_percent "nullable"
+        float target_percent "nullable"
+        json extra "nullable"
+        string created_at
+    }
+
+    HISTORY_TOTALS {
+        int id PK
+        string timestamp "UNIQUE(timestamp)"
+        float total_value "nullable"
+        json extra "nullable"
+        string created_at
+    }
+
+    ASSET_VARIANCE_HISTORY {
+        string timestamp "view over history_assets + history_totals"
+        string symbol
+        float value
+        float target_percent
+        float current_percent
+        float deviation_percent "current_percent - target_percent"
+        float value_deviation "value - (total_value * target_percent / 100)"
+    }
+
+    GROUP_VARIANCE_HISTORY {
+        string timestamp "view over history_groups"
+        string group_name
+        float value
+        float target_percent
+        float current_percent
+        float deviation_percent
+    }
+
+    BARCA_VARIANCE_HISTORY {
+        string timestamp "view over history_barca"
+        string barca
+        float value
+        float target_percent
+        float current_percent
+        float deviation_percent
+    }
+
+    WALLET_ALLOCATIONS }o..|| WALLET_ALLOCATIONS_CURRENT : "aggregated (latest per group)"
+    CRYPTO }o..|| WALLET_ALLOCATIONS_CURRENT : "priced by symbol at request time"
+    WALLET_ALLOCATIONS_CURRENT ||..o{ ALLOCATIONS : "computed result persisted as JSON audit"
+    HISTORY_TOTALS ||..o{ HISTORY_ASSETS : "same timestamp, one snapshot batch"
+    HISTORY_TOTALS ||..o{ HISTORY_GROUPS : "same timestamp"
+    HISTORY_TOTALS ||..o{ HISTORY_BARCA : "same timestamp"
+    HISTORY_ASSETS ||..|| ASSET_VARIANCE_HISTORY : "view adds deviation vs. totals"
+    HISTORY_GROUPS ||..|| GROUP_VARIANCE_HISTORY : "view adds deviation_percent"
+    HISTORY_BARCA ||..|| BARCA_VARIANCE_HISTORY : "view adds deviation_percent"

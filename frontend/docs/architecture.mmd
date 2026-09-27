@@ -1,0 +1,78 @@
+flowchart TD
+    subgraph APP["App.jsx — composition root"]
+        ROOT["Tab & filter state,\nderived totals & options"]
+    end
+
+    subgraph LAYOUT["Layout components"]
+        HEADER["AppHeader (sticky)\n+ ActionsBar"]
+        STATS["StatTiles"]
+        STATUS["StatusLine"]
+        FILTERS["FiltersBar\n(active-filter chips)"]
+        EMPTY["EmptyState"]
+    end
+
+    subgraph TABS["components/tabs/ — one per Tab"]
+        T0["PerAssetTab"]
+        T1["PerAssetTotalTab"]
+        T2["PerGroupTab"]
+        T3["BarcaActualTab"]
+        T4["DashboardTab"]
+    end
+
+    subgraph SHARED["Shared UI components"]
+        SORTHEAD["SortableTableHead"]
+        PAGI["PaginationControls"]
+        BADGE["DeviationBadge\n(status dot + text)"]
+        PIE["AllocationPieChart"]
+        LINE["HistoryLineChart"]
+        TOOLTIP["ChartTooltip"]
+        DCTRL["DashboardControls"]
+    end
+
+    subgraph HOOKS["hooks/ — state & data fetching"]
+        HALLOC["useAllocations"]
+        HHIST["useHistoryDashboard"]
+        HSORT["useSortableData"]
+        HPAGE["usePagination"]
+    end
+
+    subgraph UTILS["utils/ — pure functions (unit tested)"]
+        FMT["formatters.js"]
+        MATH["allocationMath.js"]
+        BUCKET["historyBucketing.js"]
+    end
+
+    subgraph API["api/client.js"]
+        CLIENT["fetchAllocations()\nfetchHistory()\nimportWallets()"]
+    end
+
+    THEME["theme.js\ndarkTheme · COLORS · colorForSeries"]
+    BACKEND[("Rust backend\nGET/POST /api/*")]
+
+    ROOT --> HEADER
+    ROOT --> STATS
+    ROOT --> STATUS
+    ROOT --> FILTERS
+    ROOT --> EMPTY
+    ROOT --> T0
+    ROOT --> T1
+    ROOT --> T2
+    ROOT --> T3
+    ROOT --> T4
+    ROOT -->|owns| HALLOC
+
+    TABS --> SHARED
+    TABS --> HOOKS
+    TABS --> UTILS
+    HOOKS --> CLIENT
+    CLIENT --> BACKEND
+    TABS -.->|theme tokens| THEME
+    SHARED -.->|theme tokens| THEME
+
+    style APP fill:#1e293b,stroke:#fcd34d,color:#e5e7eb
+    style LAYOUT fill:#1e293b,stroke:#93c5fd,color:#e5e7eb
+    style TABS fill:#1e293b,stroke:#86efac,color:#e5e7eb
+    style SHARED fill:#1e293b,stroke:#f0abfc,color:#e5e7eb
+    style HOOKS fill:#1e293b,stroke:#fca5a5,color:#e5e7eb
+    style UTILS fill:#1e293b,stroke:#67e8f9,color:#e5e7eb
+    style API fill:#1e293b,stroke:#fdba74,color:#e5e7eb

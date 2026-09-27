@@ -58,6 +58,21 @@ Run everything with `cargo test`; `cargo clippy --all-targets` is kept warning-f
 - `wallet_allocations.csv` remains the hand-edited source of truth for wallet positions; SQLite is an append-only audit/history log fed by importing that CSV, not the other way around. This keeps editing your portfolio a one-file, no-tooling operation, which is the right trade-off for a single-user dashboard.
 - Allocations are computed synchronously per request rather than cached/pre-aggregated — simple and fine at this data volume; would need revisiting only if history tables or request volume grew by orders of magnitude.
 
+## Data Model
+
+`wallet_allocations` is the only hand-fed table (via the CSV importer); everything else is either a derived view or an append-only snapshot written by `/api/allocations`. SQLite has no `FOREIGN KEY` constraints anywhere in this schema — every relationship below is logical (joined by `symbol` or `timestamp` in a view or in application code), not enforced by the database, which is why they're drawn as dotted lines.
+
+Source: [`docs/data-model.mmd`](docs/data-model.mmd)
+
+![Data model: wallet_allocations ledger, its latest-per-symbol view, live Crypto price feed, the four history_* snapshot tables sharing a timestamp, their *_variance_history views, and the allocations audit table](docs/data-model.png)
+
+- **`wallet_allocations`** — append-only ledger fed by `import_wallet_allocations` from `wallet_allocations.csv`; every edit is a new row, never an update.
+- **`wallet_allocations_current`** (view) — aggregates the latest row per `(symbol, group_name, barca)`, summing `current_quantity` across ledger entries (e.g. the same coin held on two exchanges).
+- **`CRYPTO`** — live market data from CoinMarketCap; never persisted directly, only joined by `symbol` against `wallet_allocations_current` at request time inside `compute_allocations`.
+- **`history_assets` / `history_groups` / `history_barca` / `history_totals`** — one snapshot batch per `timestamp`, written together by `HistoryService::persist_snapshots` every time `/api/allocations` runs.
+- **`asset_variance_history` / `group_variance_history` / `barca_variance_history`** (views) — add `deviation_percent` (and, for assets, `value_deviation`) on top of the raw snapshots; these are what `/api/history` actually serves.
+- **`allocations`** — audit trail of the full computed JSON payload per run, independent of the per-row snapshots.
+
 ---
 
 ## Prerequisites
