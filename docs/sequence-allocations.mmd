@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Handler as "Axum handler<br/>api_allocations"
+    participant Alloc as "AllocationsService"
+    participant Provider as "CryptoProvider port<br/>(ReqwestCryptoProvider)"
+    participant CMC as "CoinMarketCap API"
+    participant Store as "AllocationStore port<br/>(FileCsvStore)"
+    participant Repo as "HistoryRepo port<br/>(SqliteRepo)"
+    participant DB as "SQLite"
+    participant Compute as "compute_allocations<br/>(pure function)"
+    participant History as "HistoryService"
+
+    Client->>Handler: GET /api/allocations
+    Handler->>Alloc: compute_and_record(api_key, market)
+
+    Alloc->>Provider: fetch_latest(api_key)
+    Provider->>CMC: GET /cryptocurrency/listings/latest
+    CMC-->>Provider: price data (wire format)
+    Provider-->>Alloc: Vec<Crypto> (domain type)
+
+    Alloc->>Store: read_barca_allocations(path, market)
+    Store-->>Alloc: HashMap<group, target_percent>
+
+    Alloc->>Repo: fetch_current_wallet_allocations()
+    Repo->>DB: SELECT * FROM wallet_allocations_current
+    DB-->>Repo: rows
+    Repo-->>Alloc: Vec<WalletAllocation>
+
+    Alloc->>Compute: compute_allocations(allocations, cryptos, targets)
+    Compute-->>Alloc: per_asset / per_group / per_barca (JSON)
+
+    Alloc->>Repo: persist_allocation_record(record)
+    Repo->>DB: INSERT INTO allocations
+    Alloc-->>Handler: allocations JSON
+
+    Handler->>History: persist_snapshots(ts, per_asset, per_group, per_barca, total_value)
+    History->>Repo: insert_asset_snapshot / insert_group_snapshot / insert_barca_snapshot / insert_total_snapshot
+    Repo->>DB: INSERT OR IGNORE ...
+
+    Handler-->>Client: 200 OK (allocations JSON)
+
+    Note over Handler,Repo: Every hop logs structured tracing events<br/>(error!/warn!/info! with symbol, error, counts)<br/>so a failure is traceable from logs alone.

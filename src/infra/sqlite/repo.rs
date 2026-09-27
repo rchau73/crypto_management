@@ -207,7 +207,7 @@ impl HistoryRepo for SqliteRepo {
 
     // wallet allocations ledger
     async fn insert_wallet_allocation(&self, wa: &WalletAllocation) -> RepoResult<()> {
-        let extra_notes = wa.notes.as_ref().map(|s| s.as_str());
+        let extra_notes = wa.notes.as_deref();
         sqlx::query("INSERT INTO wallet_allocations (symbol, group_name, barca, target_percent, current_quantity, last_price, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
             .bind(&wa.symbol)
             .bind(&wa.group_name)
@@ -216,6 +216,13 @@ impl HistoryRepo for SqliteRepo {
             .bind(wa.current_quantity)
             .bind(wa.last_price)
             .bind(extra_notes)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_wallet_allocations(&self) -> RepoResult<()> {
+        sqlx::query("DELETE FROM wallet_allocations")
             .execute(&self.pool)
             .await?;
         Ok(())

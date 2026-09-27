@@ -16,6 +16,50 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 
 ---
 
+## Architecture
+
+The backend follows **ports-and-adapters** (a.k.a. hexagonal / clean architecture): business logic never talks to SQLite, CoinMarketCap, or the filesystem directly — it only talks to small traits, and concrete implementations of those traits are plugged in at startup. The goal is that any of those external systems (swap SQLite for Postgres, CoinMarketCap for another price feed) can be replaced without touching a single line of business logic.
+
+Source: [`docs/architecture.mmd`](docs/architecture.mmd)
+
+![Backend architecture: composition root, usecases, domain ports, and infra adapters](docs/architecture.png)
+
+**Dependency direction always points inward**: `main` depends on `usecases` and `infra`; `usecases` depends only on `domain`; `infra` implements `domain`'s traits. Nothing in `domain/` or `usecases/` imports `sqlx` or `reqwest` — that's what makes the pure logic trivially unit-testable and the adapters swappable.
+
+| Layer | Path | Responsibility |
+|---|---|---|
+| Domain | `src/domain/models.rs` | Plain structs shared across layers (`Crypto`, `WalletAllocation`, snapshot rows). No logic, no I/O. |
+| Domain (ports) | `src/domain/repository.rs`, `src/domain/market_data.rs` | Traits (`HistoryRepo`, `CryptoProvider`) that `usecases` code against instead of concrete databases/APIs. |
+| Use cases | `src/usecases/compute_allocations.rs` | Pure function: wallet + prices + targets in, per-asset/per-group/per-BARCA breakdown out. No I/O — the easiest thing in the codebase to unit test. |
+| Use cases | `src/usecases/allocations_service.rs`, `src/usecases/history_service.rs` | Orchestrate ports to fetch prices, compute allocations, persist snapshots, and serve history — the application's actual behavior. |
+| Infra (adapters) | `src/infra/sqlite/repo.rs` | Implements `HistoryRepo` against SQLite via `sqlx`. |
+| Infra (adapters) | `src/infra/coinmarketcap.rs` | Implements `CryptoProvider` against the CoinMarketCap REST API; owns that API's wire format and maps it into the domain `Crypto` type. |
+| Composition root | `src/main.rs` | Axum route handlers (thin — they just call into `usecases`), env/config loading, DB pool + migrations, and wiring the concrete adapters into `AppState` at startup. |
+| Scripts | `src/bin/*.rs` | Standalone CLI utilities (CSV importer, historical price exporter) — deliberately separate from the server binary. |
+
+### Sequence diagram: `GET /api/allocations`
+
+This is the core workflow: fetch live prices, read the wallet and its targets, compute the allocation breakdown, persist it, and answer the request — with every hop logging structured `tracing` events so a failure anywhere is traceable from the logs alone.
+
+Source: [`docs/sequence-allocations.mmd`](docs/sequence-allocations.mmd)
+
+![Sequence diagram for GET /api/allocations, from the Axum handler through AllocationsService, the CryptoProvider and AllocationStore ports, compute_allocations, and snapshot persistence](docs/sequence-allocations.png)
+
+### Testing strategy
+
+- **Unit tests** for `compute_allocations` (`src/usecases/compute_allocations.rs`) cover the happy path plus edge cases: unknown symbols, zero total value (division-by-zero guard), and duplicate wallet rows for the same asset aggregating correctly.
+- **Repository tests** (`src/infra/sqlite/repo.rs`) run against a real in-memory SQLite database and the actual migrations, not a mock — verifying the SQL and the schema together.
+- **An end-to-end integration test** (`src/tests/integration.rs`) drives the real Axum router in-process, with fake `CryptoProvider`/`AllocationStore` implementations standing in for the network and the CSV file — proving the whole request → handler → use case → repo → response chain actually works together.
+
+Run everything with `cargo test`; `cargo clippy --all-targets` is kept warning-free.
+
+### Known, intentional trade-offs
+
+- `wallet_allocations.csv` remains the hand-edited source of truth for wallet positions; SQLite is an append-only audit/history log fed by importing that CSV, not the other way around. This keeps editing your portfolio a one-file, no-tooling operation, which is the right trade-off for a single-user dashboard.
+- Allocations are computed synchronously per request rather than cached/pre-aggregated — simple and fine at this data volume; would need revisiting only if history tables or request volume grew by orders of magnitude.
+
+---
+
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install)
@@ -59,11 +103,13 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
    DOGE,Trading,Altcoins,2,1000
    ```
 
-4. **Build and run the backend:**
+4. **Build and run the backend server:**
 
    ```sh
-   cargo run
+   cargo run --bin crypto_management
    ```
+
+   (`cargo run` alone also works, since `crypto_management` is the default binary — but this repo also has extractor/importer binaries in `src/bin/`, so use `--bin crypto_management` if you want to be explicit about starting the server.)
 
    The backend will start at [http://127.0.0.1:3001](http://127.0.0.1:3001).
 
@@ -139,9 +185,9 @@ When the backend starts it checks whether `wallet_allocations_current` is empty 
    - Loads wallet positions from the SQLite view `wallet_allocations_current` (auto-seeded from `wallet_allocations.csv`, or import manually through the CLI/UI/API).
    - Serves `/api/allocations` with the computed per-asset/per-group/BARCA breakdowns and persists every snapshot into SQLite for the dashboard.
 
-2. **Run the backend:**
+2. **Run the backend server:**
    ```sh
-   cargo run
+   cargo run --bin crypto_management
    ```
 
 - Click **"Update Prices & Show Distribution"** in the frontend to fetch live prices and see your portfolio allocation.
@@ -223,14 +269,9 @@ curl -sS "http://127.0.0.1:3001/api/history?level=assets" | jq .
 
 The frontend dashboard tab uses these APIs (with optional period bucketing) to plot totals, BARCA groups, asset symbols, or the new per-group series.
 
-## Migrating from CSV to DB
+## CSV vs. DB responsibilities
 
-Current behavior remains CSV-first: the app still writes CSV snapshots. The DB migration and import tool let you keep the CSV as the editable source-of-truth for wallet definitions while persisting snapshots and allocation audits in SQLite for queries, dashboards, and tests.
-
-Planned next steps (optional):
-
-- Wire `/api/allocations` to persist snapshots into the DB (instead of CSVs).
-- Add automated migration runner using `sqlx::migrate!` and CI checks.
+`wallet_allocations.csv` stays the editable source of truth for wallet definitions — SQLite is DB-only from there: `/api/allocations` persists every computed snapshot directly into SQLite (no CSV snapshot files are written anymore), and the importer appends one audit row per CSV line into the `wallet_allocations` ledger. See [Architecture](#architecture) for how the pieces fit together.
 
 
 

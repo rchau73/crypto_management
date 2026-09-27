@@ -187,6 +187,8 @@ impl HistoryService {
         &self,
         path: &str,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        // CSV is the source of truth: replace DB rows on each import
+        self.repo.clear_wallet_allocations().await?;
         let mut rdr = csv::ReaderBuilder::new()
             .trim(csv::Trim::All)
             .flexible(true)
