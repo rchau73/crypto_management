@@ -66,7 +66,7 @@ Run everything with `cargo test`; `cargo clippy --all-targets` is kept warning-f
 
 ### Known, intentional trade-offs
 
-- `wallet_allocations.csv` remains the hand-edited source of truth for wallet positions; SQLite is an append-only audit/history log fed by importing that CSV, not the other way around. This keeps editing your portfolio a one-file, no-tooling operation, which is the right trade-off for a single-user dashboard.
+- The DB (`portfolio_targets`/`barca_targets` for config, the append-only `wallet_allocations` ledger for quantity history) is authoritative; `wallet_allocations.csv` is only a one-time seed for brand-new assets, never re-applied on top of existing data. This trades "one-file, no-tooling portfolio editing" for "safe concurrent edits with an audit trail and no silent overwrite risk" — the right call once the admin UI exists, even for a single-user dashboard.
 - Allocations are computed synchronously per request rather than cached/pre-aggregated — simple and fine at this data volume; would need revisiting only if history tables or request volume grew by orders of magnitude.
 
 ## Data Model
@@ -100,11 +100,11 @@ Three fixed roles, checked with a plain rank comparison (`Admin > Manager > User
 
 - **Session**: a short-lived (15 min) JWT access token plus a longer-lived (14 day) opaque refresh token, both `HttpOnly`/`SameSite=Lax` cookies — never `localStorage`, which is readable by any injected script. The frontend's `api/client.js` transparently calls `/api/auth/refresh` once on a 401 and retries, so an expired access token never interrupts an active session.
 - **Passwords**: `argon2id` via the `argon2` crate. Never compared or stored in plaintext.
-- **No public registration**: every account is created by an Admin. The very first Admin is seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars on first boot, if the `users` table is empty (see `ensure_admin_seeded` in `main.rs`).
+- **No public registration**: every account is created by an Admin. The very first Admin is seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`ADMIN_EMAIL` env vars on first boot, if the `users` table is empty and all three are set (see `ensure_admin_seeded` in `main.rs`).
 - **CORS**: credentialed (cookie-carrying) requests can't use a wildcard origin — `FRONTEND_ORIGIN` must name the frontend's exact origin.
 - **Deliberately not used**: no API gateway (Kong et al.) — that solves problems (routing across many services, centralizing auth for many teams) this single-binary, handful-of-users app doesn't have, and would add a second stateful service to operate and patch for no benefit here. If you outgrow this, a lightweight reverse proxy (Caddy, for automatic HTTPS) or a perimeter layer (Cloudflare Tunnel + Access, useful specifically for secure remote/mobile access without opening an inbound port) are the right next steps — not a gateway.
 
-Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS).
+Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS).
 
 ---
 
@@ -112,7 +112,9 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Node.js & npm](https://nodejs.org/)
-- CoinMarketCap API key (for live prices)
+- A [CoinMarketCap](https://coinmarketcap.com/api/) API key — **required**, crypto pricing is always on.
+- A [brapi.dev](https://brapi.dev) API key — optional, only needed once you track a `br-equities` asset (e.g. HGRU11, XPML11).
+- A [Finnhub](https://finnhub.io) API key — optional, only needed once you track a `us-indices` asset.
 
 ---
 
@@ -133,23 +135,25 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
    cp .env.example .env
    ```
 
-   - `API_KEY`: Your CoinMarketCap API key.
-   - `CURRENT_MARKET`: The market name to use for filtering BARCA targets (e.g., `BullMarket`, `BearMarket`, etc).
-   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`: see [Authentication & Authorization](#authentication--authorization) — all required.
+   - `API_KEY`: Your CoinMarketCap API key (required).
+   - `BRAPI_API_KEY`, `FINNHUB_API_KEY`: optional — leave the placeholder values if you're not tracking `br-equities`/`us-indices` assets yet; nothing breaks, those providers just aren't called.
+   - `CURRENT_MARKET`: which BARCA target profile is active (`BullMarket` or `BearMarket` — see [BARCA targets](#editable-portfolio-and-barca-targets) below). Every `barca_targets` row belongs to exactly one profile; there's no fallback between them.
+   - `DATABASE_URL`: defaults to `sqlite://./data/crypto.db` if unset — no need to set this for local dev.
+   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`: see [Authentication & Authorization](#authentication--authorization) — all required (the three `ADMIN_*` vars must be set together, or no bootstrap admin is created and you'll have no way to log in).
 
-3. **Prepare your wallet allocations file:**
+3. **Prepare your wallet allocations file (optional — only needed to seed your very first assets):**
 
-   Edit or create `wallet_allocations.csv` in the project root. Example:
+   Edit or create `wallet_allocations.csv` in the project root. This is a **one-time seed**, not a live source of truth — see [Editable portfolio & BARCA targets](#editable-portfolio-and-barca-targets) below. Example:
 
    ```
-   symbol,group,barca,target_percent,current_quantity
-   USDT,Caixa,Caixa,30,1200
-   BTC,Holding,Hodl,10,0.75
-   ETH,Holding,Hodl,10,2.5
-   SOL,Trading,Altcoins,5,10
-   ETH,Trading,Altcoins,15,2
-   DOGE,Trading,Altcoins,2,1000
+   symbol,group,barca,target_percent,current_quantity,asset_class
+   USDT,Caixa,Caixa,30,1200,crypto
+   BTC,Holding,Hodl,10,0.75,crypto
+   ETH,Holding,Hodl,10,2.5,crypto
+   HGRU11,FII,Renda Variavel,5,10,br-equities
    ```
+
+   `asset_class` is optional and defaults to `crypto` if the column is omitted; it's one of `crypto` / `br-equities` / `us-indices` and controls which price provider is used for that symbol when you click **Update Prices**.
 
 4. **Build and run the backend server:**
 
@@ -159,40 +163,16 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
 
    (`cargo run` alone also works, since `crypto_management` is the default binary — but this repo also has extractor/importer binaries in `src/bin/`, so use `--bin crypto_management` if you want to be explicit about starting the server.)
 
-   The backend will start at [http://127.0.0.1:3001](http://127.0.0.1:3001).
+   The backend will start at [http://127.0.0.1:3001](http://127.0.0.1:3001). On startup it:
+   - connects to SQLite at `DATABASE_URL` (a fresh file is created automatically if it doesn't exist — no manual `sqlite3`/`mkdir` step needed),
+   - runs every pending migration in `migrations/` automatically (`sqlx::migrate!`), and
+   - seeds `wallet_allocations` from your CSV **only if the table is completely empty**, and bootstraps the Admin account from `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`ADMIN_EMAIL` **only if the `users` table is completely empty** — both are safe to re-run on every boot, they're no-ops once you have real data.
 
-### Database (SQLite) & migrations
+   You should see `Migrations applied` and `Listening on 127.0.0.1:3001` in the logs. If you add a new file under `migrations/` yourself, force a real rebuild before the next `cargo run` (e.g. `touch src/main.rs`) — `sqlx::migrate!` embeds migrations at compile time, and cargo doesn't always detect that a `.sql`-only change needs a rebuild, so a stale binary can silently skip it.
 
-This project supports an optional local SQLite database for history and wallet allocation audit. The repository includes SQL migrations in the `migrations/` folder.
-
-1. Create a folder for the DB and initialize the schema:
-
-```bash
-mkdir -p data
-# apply the initial migration into a new SQLite file
-sqlite3 ./data/crypto.db < migrations/0001_create_history_tables.sql
-```
-
-2. Or set `DATABASE_URL` to a file path and let the app connect to it:
-
-```bash
-export DATABASE_URL=sqlite://./data/crypto.db
-```
-
-Notes:
-- The migrations create `history_assets`, `history_barca`, `history_groups`, `history_totals`, the append-only `wallet_allocations` ledger, and an `allocations` table for persisted computed payloads.
-- Convenience views power the API:
-  - `wallet_allocations_current` now aggregates every wallet row per symbol/group/BARCA (no more “last row wins” bugs).
-  - `asset_variance_history`, `barca_variance_history`, and `group_variance_history` expose the dashboard-ready history (value, current %, target %, deviation, value deviation).
-- Run `sqlx migrate run` (or start the backend once) whenever the `migrations/` folder changes so the database schema stays in sync.
-
-### Seeding `wallet_allocations`
-
-When the backend starts it checks whether `wallet_allocations_current` is empty and, if so, seeds it from `wallet_allocations.csv` (override the path via `WALLET_ALLOCATIONS_PATH`). You can also trigger the import manually:
-
-- CLI: `cargo run --bin import_wallet_allocations -- wallet_allocations.csv`
-- API: requires a Manager+ session cookie (see below) — `curl -b cookies.txt -X POST http://127.0.0.1:3001/api/import_wallets -H "Content-Type: application/json" -d '{"path":"wallet_allocations.csv"}'`
-- UI: click the **Import Wallet CSV** button next to “Update Prices & Show Distribution” (hidden for the User role).
+   To manually re-import the CSV later (e.g. to seed a newly-added asset — this never overwrites an existing DB row, see [below](#editable-portfolio-and-barca-targets)):
+   - CLI: `cargo run --bin import_wallet_allocations -- wallet_allocations.csv`
+   - UI: click **Import Wallet CSV** in the header (Manager+ only).
 
 5. **Test the API:**
 
@@ -232,56 +212,40 @@ When the backend starts it checks whether `wallet_allocations_current` is empty 
 
    The frontend will be available at [http://localhost:5173](http://localhost:5173) (or the port shown in your terminal).
 
+4. **Log in.** Open the frontend URL — you'll land on the login page. Sign in with the `ADMIN_USERNAME`/`ADMIN_PASSWORD` from your `.env` (that account was bootstrapped when the backend first started, see step 4 above). There's no self-registration anywhere in the app; every other account is created from the Admin tab once you're logged in.
+
 ---
 
 ## Usage
 
-### Backend
+With both the backend and frontend running and you logged in:
 
-1. **Rust API** (see `src/main.rs`)
-   - Reads BARCA targets from `wallet_barca.csv`.
-   - Loads wallet positions from the SQLite view `wallet_allocations_current` (auto-seeded from `wallet_allocations.csv`, or import manually through the CLI/UI/API).
-   - Serves `/api/allocations` with the computed per-asset/per-group/BARCA breakdowns and persists every snapshot into SQLite for the dashboard.
+- Click **Update Prices** in the header to fetch live prices (CoinMarketCap always; brapi/Finnhub too, for any `br-equities`/`us-indices` assets you're tracking) and recompute your allocation. This is the only thing that triggers a price fetch — no polling, no background jobs.
+- **Per-Asset / Per-Asset Total / Per-Group / BARCA Actual** tabs show the computed breakdown, with deviation from target highlighted.
+- The **Dashboard** tab plots the persisted history (every `Update Prices` click appends a snapshot).
+- **Portfolio Targets** and **BARCA Targets** tabs (Manager+) are where you actually manage your portfolio day to day — see the next section. `wallet_allocations.csv` is only a one-time seed, not something you keep editing.
+- **Admin** tab (Admin only) manages user accounts (create, change role, reset password, delete).
 
-2. **Run the backend server:**
-   ```sh
-   cargo run --bin crypto_management
-   ```
+### Editable portfolio and BARCA targets
 
-- Click **"Update Prices & Show Distribution"** in the frontend to fetch live prices and see your portfolio allocation.
-- The dashboard displays both per-asset and per-group allocation, with deviations highlighted.
-- To update your portfolio, edit `wallet_allocations.csv` and refresh the frontend.
+Once you have data, the DB — not the CSV — is authoritative:
 
-### Importing `wallet_allocations.csv` (manual)
+- **Portfolio Targets** tab: one editable row per asset (symbol, group, BARCA, asset class, target %). Quantity/notes are read-only here (they come from CSV import / ledger history, to avoid a whole class of double-counting bugs from mixing "edit a target" with "edit a ledger") — add a brand-new asset via **+ Add Asset** to give it a starting quantity. The BARCA/Group columns suggest existing values (to avoid typos) but accept a new one too.
+- **BARCA Targets** tab: one editable row per BARCA bucket (e.g. "Base", "Altcoins", or a new one like "IBOVE") for the market profile selected in the dropdown (`BullMarket`/`BearMarket`, matching `CURRENT_MARKET`). A bucket only applies to the market it's saved under — add it to both if it should always be active.
+- Both tabs share the same pattern: edit the table, a single **Save All** button submits the whole set atomically, and target percentages across the set must sum to exactly 100% or the save is rejected client- and server-side.
+- Re-importing the CSV (manually, or the automatic empty-DB seed) never overwrites an existing row — it only inserts symbols/targets that don't already exist yet.
 
-Wallet allocation changes are intentionally manual: edit `wallet_allocations.csv` in the repo root and run the importer to append an audit row into the DB. This avoids noisy duplicate rows when nothing actually changed.
-
-Run:
+### Manually re-importing the CSV
 
 ```bash
-# ensure DATABASE_URL is set (default: sqlite://./data/crypto.db)
-export DATABASE_URL=sqlite://./data/crypto.db
 cargo run --bin import_wallet_allocations -- wallet_allocations.csv
 ```
 
-This inserts one append-only row per CSV line into `wallet_allocations` (audit/history). Use the view to inspect current values:
+Inserts a ledger row (and a `portfolio_targets` seed row) only for `(symbol, group, barca, asset_class)` combinations not already in the DB. Inspect current values with:
 
 ```bash
 sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
 ```
-
----
-
-## Notable Recent Changes
-
-- **Authentication:** Login required for every route. Three roles (Admin/Manager/User) with an Admin-only user management tab — see [Authentication & Authorization](#authentication--authorization).
-- **Tabs:** All tables and charts are now in tabs for easy navigation.
-- **Per-Asset Table:** Added filters for Asset, Group, and BARCA (combinable). Pagination is applied after filtering (20 per page).
-- **Per-Group Table:** "Target %" column replaced by "Current Value ($)".
-- **Pie Charts:** Font size for labels reduced for better readability.
-- **Table Font Size:** All table data cells use font size 10 for compactness.
-- **Pagination:** Per-asset table paginates filtered results, with page selector at the bottom.
-- **Immediate Filtering:** Table updates instantly when any filter changes.
 
 ---
 
@@ -294,7 +258,13 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
   Check `JWT_SECRET` is set and unchanged since login (changing it invalidates every existing session), and that `COOKIE_SECURE` matches how you're actually serving the app (`false` over plain HTTP, `true` over HTTPS — browsers silently drop `Secure` cookies over HTTP).
 
 - **API key errors:**  
-  Make sure your `.env` file is present and contains a valid CoinMarketCap API key and the `MARKET` variable.
+  Make sure `.env` has a valid CoinMarketCap `API_KEY` (required) and `CURRENT_MARKET`. `BRAPI_API_KEY`/`FINNHUB_API_KEY` only matter once you track a `br-equities`/`us-indices` asset — until then they're never called, so a placeholder value there is harmless.
+
+- **No admin account / can't log in on first boot:**  
+  `ensure_admin_seeded` only bootstraps an Admin if `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` are **all three** set — check the startup logs for a warning if one's missing.
+
+- **A migration you just added doesn't seem to have run:**  
+  See the note in [Backend Setup](#backend-rust-setup) about forcing a rebuild (`touch src/main.rs`) — `cargo run` can silently reuse a binary compiled before a new `migrations/*.sql` file existed. Confirm with `sqlite3 ./data/crypto.db "SELECT version FROM _sqlx_migrations ORDER BY version DESC LIMIT 1;"`.
 
 - **Dependency issues:**  
   Run `cargo update` in the backend and `npm install` in the frontend if you encounter build errors.
@@ -304,15 +274,14 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
 ## Customization
 
 - The frontend uses Material UI with a dark theme.  
-  You can further customize the look in `frontend/src/App.jsx`.
-- The backend reads your portfolio from `wallet_allocations.csv`.  
-  You can automate or extend this as needed.
+  You can further customize the look in `frontend/src/theme.js`.
+- Your portfolio lives in the DB (`portfolio_targets` + `wallet_allocations`), edited via the **Portfolio Targets**/**BARCA Targets** tabs — see [Editable portfolio and BARCA targets](#editable-portfolio-and-barca-targets). `wallet_allocations.csv` is only a one-time seed for brand-new assets.
 
 ---
 
 ## History API & Dashboard Data
 
-Every time `/api/allocations` runs (e.g., when you click “Update Prices & Show Distribution”) the backend now persists the computed snapshot directly into SQLite:
+Every time `/api/allocations` runs (e.g., when you click **Update Prices**) the backend persists the computed snapshot directly into SQLite:
 
 - `history_assets` receives one row per asset (with target %, current %, deviation %, and USD value deviation computed in the database).
 - `history_groups` stores the per-group view that powers both the table and the dashboard.
@@ -333,7 +302,7 @@ The frontend dashboard tab uses these APIs (with optional period bucketing) to p
 
 ## CSV vs. DB responsibilities
 
-`wallet_allocations.csv` stays the editable source of truth for wallet definitions — SQLite is DB-only from there: `/api/allocations` persists every computed snapshot directly into SQLite (no CSV snapshot files are written anymore), and the importer appends one audit row per CSV line into the `wallet_allocations` ledger. See [Architecture](#architecture) for how the pieces fit together.
+The DB is authoritative once it has data — `wallet_allocations.csv` only seeds brand-new `(symbol, group, barca, asset_class)` combinations that don't already exist (via the automatic empty-DB seed on first boot, or a manual re-import), and never overwrites an existing row. Ongoing edits happen in the app itself: `target_percent` lives in the mutable `portfolio_targets`/`barca_targets` tables (edited via the Portfolio Targets/BARCA Targets tabs, see [above](#editable-portfolio-and-barca-targets)), and quantity/notes live in the append-only `wallet_allocations` ledger (updated by CSV import or, for a brand-new asset, the Portfolio Targets tab's "+ Add Asset"). See [Architecture](#architecture) for how the pieces fit together.
 
 
 

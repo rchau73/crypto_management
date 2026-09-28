@@ -11,7 +11,9 @@ use crate::domain::repository::{
 };
 use crate::infra::coinmarketcap::MockCryptoProvider;
 use crate::usecases::auth_service::hash_password;
-use crate::{AppState, api_allocations, api_history, import_wallets_handler};
+use crate::{
+    AppState, api_allocations, api_history, import_wallets_handler, import_wallets_upload_handler,
+};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -112,6 +114,18 @@ async fn build_test_app() -> (Router, String) {
     )
     .await
     .unwrap();
+    UserRepo::create_user(
+        &repo,
+        NewUser {
+            username: "viewer",
+            password_hash: &password_hash,
+            role: "user",
+            email: "viewer@example.com",
+            phone: None,
+        },
+    )
+    .await
+    .unwrap();
 
     let crypto_provider = Arc::new(MockCryptoProvider::new(vec![crypto]));
     let br_equity_provider = Arc::new(MockEquityProvider::new(vec![]));
@@ -131,6 +145,10 @@ async fn build_test_app() -> (Router, String) {
             "/api/import_wallets",
             axum::routing::post(import_wallets_handler),
         )
+        .route(
+            "/api/import_wallets/upload",
+            axum::routing::post(import_wallets_upload_handler),
+        )
         .route("/api/auth/login", axum::routing::post(login_handler))
         .route("/api/auth/logout", axum::routing::post(logout_handler))
         .route("/api/auth/me", get(me_handler))
@@ -140,12 +158,16 @@ async fn build_test_app() -> (Router, String) {
 }
 
 async fn login(app: &Router, password: &str) -> String {
+    login_as(app, "tester", password).await
+}
+
+async fn login_as(app: &Router, username: &str, password: &str) -> String {
     let req = Request::builder()
         .method("POST")
         .uri("/api/auth/login")
         .header("content-type", "application/json")
         .body(Body::from(format!(
-            r#"{{"username":"tester","password":"{password}"}}"#
+            r#"{{"username":"{username}","password":"{password}"}}"#
         )))
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
@@ -267,4 +289,158 @@ async fn allocations_and_history_round_trip_after_a_real_login_handshake() {
         .unwrap();
     let logout_res = app.oneshot(req_logout).await.unwrap();
     assert!(logout_res.status().is_success());
+}
+
+/// A minimal `multipart/form-data` body with a single "file" field —
+/// hand-built rather than pulled from a client library, since the point is
+/// to drive the real Axum `Multipart` extractor end to end.
+fn multipart_csv_body(csv: &str) -> (String, Body) {
+    multipart_csv_body_bytes(csv.as_bytes())
+}
+
+/// Same shape as `multipart_csv_body`, but for raw bytes — lets a test send
+/// something that isn't even valid UTF-8 text (e.g. binary file bytes).
+fn multipart_csv_body_bytes(content: &[u8]) -> (String, Body) {
+    multipart_body_named("wallet.csv", content)
+}
+
+/// Same shape again, but with an explicit filename — for tests exercising
+/// the upload handler's filename-extension check.
+fn multipart_body_named(filename: &str, content: &[u8]) -> (String, Body) {
+    let boundary = "test-boundary-x7f3";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\
+             Content-Type: text/csv\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(content);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (
+        format!("multipart/form-data; boundary={boundary}"),
+        Body::from(body),
+    )
+}
+
+#[tokio::test]
+async fn csv_upload_is_rejected_for_the_viewer_role() {
+    let (app, password) = build_test_app().await;
+    let cookie = login_as(&app, "viewer", &password).await;
+
+    let (content_type, body) = multipart_csv_body(
+        "symbol,group,barca,target_percent,current_quantity,comments,asset_class\n\
+         HGRU11,FII,Renda Variavel,5,10,seed,br-equities\n",
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/import_wallets/upload")
+        .header(COOKIE, &cookie)
+        .header("content-type", content_type)
+        .body(body)
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn csv_upload_imports_a_new_asset_for_a_manager() {
+    let (app, password) = build_test_app().await;
+    let cookie = login(&app, &password).await;
+
+    let (content_type, body) = multipart_csv_body(
+        "symbol,group,barca,target_percent,current_quantity,comments,asset_class\n\
+         HGRU11,FII,Renda Variavel,5,10,seed,br-equities\n",
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/import_wallets/upload")
+        .header(COOKIE, &cookie)
+        .header("content-type", content_type)
+        .body(body)
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert!(
+        res.status().is_success(),
+        "upload should succeed for a manager"
+    );
+    let json = body_json(res).await;
+    assert_eq!(json["imported"], 1);
+}
+
+#[tokio::test]
+async fn csv_upload_of_a_binary_file_is_rejected_by_content_sniffing_before_parsing() {
+    let (app, password) = build_test_app().await;
+    let cookie = login(&app, &password).await;
+
+    // JPEG magic bytes + garbage — not valid UTF-8 at all. The upload
+    // handler's binary-content check must catch this itself, before the
+    // file ever reaches the CSV parser.
+    let (content_type, body) =
+        multipart_csv_body_bytes(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/import_wallets/upload")
+        .header(COOKIE, &cookie)
+        .header("content-type", content_type)
+        .body(body)
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        res.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a bad upload is the caller's mistake, not a 500"
+    );
+    let json = body_json(res).await;
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("binary content detected")
+    );
+}
+
+#[tokio::test]
+async fn csv_upload_rejects_a_non_csv_filename_before_looking_at_content() {
+    let (app, password) = build_test_app().await;
+    let cookie = login(&app, &password).await;
+
+    let (content_type, body) =
+        multipart_body_named("wallet.docx", b"symbol,group,barca\nBTC,Core,Base\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/import_wallets/upload")
+        .header(COOKIE, &cookie)
+        .header("content-type", content_type)
+        .body(body)
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+    let json = body_json(res).await;
+    assert!(json["error"].as_str().unwrap().contains("wallet.docx"));
+}
+
+#[tokio::test]
+async fn csv_upload_with_a_missing_required_column_is_rejected_as_a_client_error() {
+    let (app, password) = build_test_app().await;
+    let cookie = login(&app, &password).await;
+
+    // Well-formed CSV text, but no "symbol" column — WalletCsvRow requires it.
+    let (content_type, body) = multipart_csv_body("group,barca\nCore,Base\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/import_wallets/upload")
+        .header(COOKIE, &cookie)
+        .header("content-type", content_type)
+        .body(body)
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
 }

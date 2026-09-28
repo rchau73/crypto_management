@@ -77,6 +77,20 @@ export async function importWallets(path = "wallet_allocations.csv") {
   return parseJsonOrThrow(res, "Import failed");
 }
 
+// Uploads a CSV file's actual content — unlike importWallets (which asks
+// the server to read a path on its own filesystem), this works regardless
+// of where the backend is deployed, since the browser sends the file
+// itself. Manager+ only, enforced server-side.
+export async function uploadWalletCsv(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await apiFetch("/api/import_wallets/upload", {
+    method: "POST",
+    body: formData,
+  });
+  return parseJsonOrThrow(res, "Import failed");
+}
+
 export async function login(username, password) {
   const res = await postJson("/api/auth/login", { username, password });
   return parseJsonOrThrow(res, "Invalid username or password");

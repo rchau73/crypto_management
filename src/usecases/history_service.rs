@@ -5,8 +5,65 @@ use crate::domain::repository::{HistoryRepo, PortfolioTargetInput, PortfolioTarg
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
+
+/// Distinguishes "the caller gave us something that isn't a wallet CSV"
+/// (their mistake — worth a 400) from "something broke on our end" (a 500).
+/// A `csv::Error` alone doesn't cover every case: a file that's
+/// syntactically valid CSV but uses different column names (e.g. an export
+/// with a "quantity" column instead of "current_quantity") parses without
+/// any `csv::Error` at all — `symbol` being entirely absent from the header
+/// is the one column we can and do insist on, since without it there is no
+/// way to know which row is which asset.
+#[derive(Debug)]
+pub enum ImportError {
+    Csv(csv::Error),
+    MissingSymbolColumn { found_columns: Vec<String> },
+    Repo(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl ImportError {
+    pub fn is_client_error(&self) -> bool {
+        matches!(
+            self,
+            ImportError::Csv(_) | ImportError::MissingSymbolColumn { .. }
+        )
+    }
+}
+
+impl fmt::Display for ImportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImportError::Csv(e) => write!(f, "invalid CSV: {e}"),
+            ImportError::MissingSymbolColumn { found_columns } => write!(
+                f,
+                "CSV is missing the required \"symbol\" column (found columns: {})",
+                if found_columns.is_empty() {
+                    "none".to_string()
+                } else {
+                    found_columns.join(", ")
+                }
+            ),
+            ImportError::Repo(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ImportError {}
+
+impl From<csv::Error> for ImportError {
+    fn from(e: csv::Error) -> Self {
+        ImportError::Csv(e)
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for ImportError {
+    fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        ImportError::Repo(e)
+    }
+}
 
 pub struct HistoryService {
     pub repo: Arc<dyn HistoryRepo>,
@@ -200,7 +257,7 @@ impl HistoryService {
     pub async fn import_wallet_allocations_from_path(
         &self,
         path: &str,
-    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<usize, ImportError> {
         let existing = self.repo.fetch_current_wallet_allocations().await?;
         let existing_keys: HashSet<(String, String, String, String)> = existing
             .iter()
@@ -219,40 +276,61 @@ impl HistoryService {
             .flexible(true)
             .has_headers(true)
             .from_path(path)?;
-        let mut count = 0usize;
-        // (symbol, group_name, barca, asset_class, target_percent) for every
-        // new row — seeded into portfolio_targets after the loop, via
-        // insert-if-absent so a pre-existing manager-set target is never
-        // overwritten by a re-import.
-        let mut new_targets: Vec<(String, String, String, String, f64)> = Vec::new();
+
+        // A CSV that parses fine but never had a "symbol" column at all
+        // (e.g. a differently-shaped export) would otherwise silently
+        // "succeed" having imported nothing, with no indication anything
+        // was wrong — reject it outright instead.
+        let headers = rdr.headers()?.clone();
+        if !headers.iter().any(|h| h == "symbol") {
+            return Err(ImportError::MissingSymbolColumn {
+                found_columns: headers.iter().map(String::from).collect(),
+            });
+        }
+
+        // Dedupe by key within this one import — a CSV can legitimately
+        // (or accidentally, e.g. someone points the importer at a time
+        // series export instead of a wallet-definition file) list the same
+        // key many times over. "Seed only new entries" must mean at most
+        // one seed row per key per import, not one per matching line, or a
+        // file with repeated keys inserts a ledger row per occurrence.
+        // Last occurrence in the file wins.
+        let mut new_rows: HashMap<(String, String, String, String), WalletCsvRow> = HashMap::new();
         for result in rdr.deserialize::<WalletCsvRow>() {
             let row = result?;
             let asset_class = row
                 .asset_class
                 .clone()
                 .unwrap_or_else(|| "crypto".to_string());
-            let group_name = row.group.clone().unwrap_or_default();
-            let barca = row.barca.clone().unwrap_or_default();
             let key = (
                 row.symbol.clone(),
-                group_name.clone(),
-                barca.clone(),
-                asset_class.clone(),
+                row.group.clone().unwrap_or_default(),
+                row.barca.clone().unwrap_or_default(),
+                asset_class,
             );
             if existing_keys.contains(&key) {
                 continue; // already tracked in the DB — CSV never overwrites it
             }
-            let target_percent = row.target_percent.unwrap_or(0.0);
-            new_targets.push((
-                row.symbol.clone(),
+            new_rows.insert(key, row);
+        }
+
+        if new_rows.is_empty() {
+            return Ok(0);
+        }
+
+        let mut wallet_rows = Vec::with_capacity(new_rows.len());
+        let mut target_inputs_owned = Vec::with_capacity(new_rows.len());
+        for ((symbol, group_name, barca, asset_class), row) in new_rows {
+            target_inputs_owned.push((
+                symbol.clone(),
                 group_name,
                 barca,
                 asset_class.clone(),
-                target_percent,
+                row.target_percent.unwrap_or(0.0),
             ));
-            let wa = WalletAllocation {
+            wallet_rows.push(WalletAllocation {
                 id: None,
-                symbol: row.symbol,
+                symbol,
                 group_name: row.group,
                 barca: row.barca,
                 target_percent: None,
@@ -261,28 +339,29 @@ impl HistoryService {
                 notes: row.comments,
                 asset_class,
                 created_at: None,
-            };
-            self.repo.insert_wallet_allocation(&wa).await?;
-            count += 1;
+            });
         }
 
-        if !new_targets.is_empty() {
-            let inputs: Vec<PortfolioTargetInput> = new_targets
-                .iter()
-                .map(|(symbol, group_name, barca, asset_class, target_percent)| {
-                    PortfolioTargetInput {
-                        symbol,
-                        group_name,
-                        barca,
-                        asset_class,
-                        target_percent: *target_percent,
-                    }
-                })
-                .collect();
-            self.portfolio_target_repo
-                .seed_portfolio_targets_if_absent(&inputs)
-                .await?;
-        }
+        let count = wallet_rows.len();
+        self.repo
+            .bulk_insert_wallet_allocations(&wallet_rows)
+            .await?;
+
+        let target_inputs: Vec<PortfolioTargetInput> = target_inputs_owned
+            .iter()
+            .map(
+                |(symbol, group_name, barca, asset_class, target_percent)| PortfolioTargetInput {
+                    symbol,
+                    group_name,
+                    barca,
+                    asset_class,
+                    target_percent: *target_percent,
+                },
+            )
+            .collect();
+        self.portfolio_target_repo
+            .seed_portfolio_targets_if_absent(&target_inputs)
+            .await?;
 
         Ok(count)
     }
@@ -391,6 +470,97 @@ mod import_tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_key_within_one_import_is_only_inserted_once() {
+        // Regression test for a real incident: a CSV pointed at the wrong
+        // file (a time-series export where the same symbol/group/barca
+        // repeats at every timestamp) inserted one ledger row per matching
+        // line instead of one per distinct key — 1000+ rows from one import.
+        let service = in_memory_service().await;
+        let csv = TempCsv::write(
+            "symbol,group,barca,target_percent,current_quantity,comments,asset_class\n\
+             BTC,Holding,Base,10,1.0,t1,crypto\n\
+             BTC,Holding,Base,10,1.0,t2,crypto\n\
+             BTC,Holding,Base,10,1.0,t3,crypto\n",
+        );
+
+        let inserted = service
+            .import_wallet_allocations_from_path(csv.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            inserted, 1,
+            "three lines, one distinct key — insert once, not three times"
+        );
+
+        let rows = service
+            .repo
+            .fetch_current_wallet_allocations()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_csv_whose_quantity_column_does_not_match_never_produces_an_unreadable_row() {
+        // Regression test for a real incident: a CSV with a "quantity"
+        // column (not "current_quantity") deserializes that field as None
+        // for every row. Before the fix, `COALESCE(current_quantity, 0)` in
+        // the view used an INTEGER literal, so SQLite's SUM() over an
+        // all-substituted-zero input returned INTEGER storage class instead
+        // of REAL — and sqlx's strict decode to `Option<f64>` rejected it
+        // outright, crashing every subsequent /api/allocations call.
+        let service = in_memory_service().await;
+        let csv = TempCsv::write(
+            "symbol,group,barca,quantity,target_percent\n\
+             ASTR,Holding,Altcoins,55762.8,0.45\n",
+        );
+
+        service
+            .import_wallet_allocations_from_path(csv.path())
+            .await
+            .unwrap();
+
+        // The real assertion: this must not error decoding the row.
+        let rows = service
+            .repo
+            .fetch_current_wallet_allocations()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].current_quantity,
+            Some(0.0),
+            "quantity was never actually provided under a matching column name"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_csv_with_no_symbol_column_at_all_is_rejected_as_a_client_error() {
+        // Without this check, a file that's syntactically valid CSV but has
+        // no "symbol" column would just silently import 0 rows — no error,
+        // no indication anything was wrong, easy to mistake for "there was
+        // nothing new to import" instead of "this isn't a wallet file".
+        let service = in_memory_service().await;
+        let csv = TempCsv::write("timestamp,price,value\n2025-01-01,100,1000\n");
+
+        let err = service
+            .import_wallet_allocations_from_path(csv.path())
+            .await
+            .unwrap_err();
+
+        assert!(err.is_client_error());
+        assert!(matches!(err, ImportError::MissingSymbolColumn { .. }));
+        assert!(err.to_string().contains("symbol"));
+
+        let rows = service
+            .repo
+            .fetch_current_wallet_allocations()
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "a rejected import must not write anything");
     }
 
     #[tokio::test]
