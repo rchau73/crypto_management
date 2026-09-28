@@ -16,7 +16,7 @@ Copy `.env.example` to `.env.local` if the backend isn't running on the default 
 
 ## Architecture
 
-`App.jsx` is a thin composition root — it owns the tab/filter state and derived totals, and delegates everything else. No business logic lives in a component: table math is in `utils/`, data fetching is in `hooks/`, and styling tokens are in `theme.js`.
+`App.jsx` is a thin composition root — it renders `LoginPage` while logged out, or the dashboard (tab/filter state and derived totals) once `useAuth` resolves a session. No business logic lives in a component: table math is in `utils/`, data fetching is in `hooks/`, and styling tokens are in `theme.js`.
 
 Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 
@@ -27,17 +27,28 @@ Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 | Layer | Path | Responsibility |
 |---|---|---|
 | Composition root | `src/App.jsx` | Tab/filter state, derived totals (`filteredAllocations`, `symbolAllocations`), and wiring everything else together. Nothing here renders a table row directly. |
-| Layout | `src/components/AppHeader.jsx`, `ActionsBar.jsx`, `StatTiles.jsx`, `StatusLine.jsx`, `FiltersBar.jsx`, `EmptyState.jsx` | The page chrome: sticky header, KPI tiles, filter chips, empty/loading affordances. |
-| Tabs | `src/components/tabs/*.jsx` | One component per tab (`PerAssetTab`, `PerAssetTotalTab`, `PerGroupTab`, `BarcaActualTab`, `DashboardTab`). Each owns its own table/chart composition and pulls in whichever hooks/utils it needs. |
+| Auth UI | `src/components/LoginPage.jsx` | Full-page swap shown whenever there's no session — there's no router, so "logged out" is just a different thing `App.jsx` renders. |
+| Layout | `src/components/AppHeader.jsx`, `ActionsBar.jsx`, `StatTiles.jsx`, `StatusLine.jsx`, `FiltersBar.jsx`, `EmptyState.jsx` | The page chrome: sticky header (identity + Log Out), KPI tiles, filter chips, empty/loading affordances. |
+| Tabs | `src/components/tabs/*.jsx` | One component per tab (`PerAssetTab`, `PerAssetTotalTab`, `PerGroupTab`, `BarcaActualTab`, `DashboardTab`, `AdminTab`). Each owns its own table/chart composition and pulls in whichever hooks/utils it needs. `AdminTab` only renders when `role === "admin"`. |
 | Shared UI | `src/components/{SortableTableHead,PaginationControls,DeviationBadge,AllocationPieChart,HistoryLineChart,ChartTooltip,DashboardControls}.jsx` | Reusable pieces used by more than one tab — a generic sortable header, pagination controls, the colored-dot deviation indicator, and the two chart wrappers. |
-| Hooks | `src/hooks/{useAllocations,useHistoryDashboard,useSortableData,usePagination}.js` | All `useState`/`useEffect`/data-fetching. `useSortableData` and `usePagination` are generic — every table reuses the same two hooks instead of hand-rolling sort/paging logic per table. |
+| Hooks | `src/hooks/{useAuth,useAllocations,useHistoryDashboard,useUsers,useSortableData,usePagination}.js` | All `useState`/`useEffect`/data-fetching. `useAuth` owns the session (checks it on mount, exposes `login`/`logout`); `useUsers` is `AdminTab`'s CRUD. `useSortableData` and `usePagination` are generic — every table reuses the same two hooks instead of hand-rolling sort/paging logic per table. |
 | Utils | `src/utils/{formatters,allocationMath,historyBucketing}.js` | Pure functions only — no React, no DOM. This is 100% of what's unit-tested (`*.test.js` next to each file). |
-| API | `src/api/client.js` | The only place that calls `fetch()`. `VITE_API_BASE_URL` (see `.env.example`) points it at the backend. |
+| API | `src/api/client.js` | The only place that calls `fetch()`. Every call sets `credentials: "include"` (so the session cookie is sent) and transparently retries once via `/api/auth/refresh` on a 401. `VITE_API_BASE_URL` (see `.env.example`) points it at the backend. |
 | Theme | `src/theme.js` | The dark MUI theme, the fixed 8-color categorical palette, and `colorForSeries()` — see [Design system](#design-system) below. |
 
 ### Testing
 
-Vitest + React Testing Library. Pure logic in `utils/` and the two generic hooks have direct unit tests; `PaginationControls` has a component test exercising click behavior. Run with `npm run test`. There's no end-to-end browser test — the golden path and edge cases (filters, sorting, pagination, CSV import, all 5 tabs, both chart types) are verified manually against a running backend before every change of this size.
+Vitest + React Testing Library. Pure logic in `utils/`, `theme.js`'s `colorForSeries`, and all six hooks (including `useAuth` and `useUsers`, with the backend mocked) have direct unit tests; `PaginationControls`, `LoginPage`, and `AdminTab` have component tests exercising real interaction (typing, clicking, confirming a delete). Run with `npm run test`. There's no end-to-end browser test — the golden path and edge cases (login, role-gated UI, filters, sorting, pagination, CSV import, all 6 tabs, both chart types) are verified manually against a running backend before every change of this size.
+
+---
+
+## Authentication
+
+There's no router and no self-registration — `App.jsx` just renders `LoginPage` instead of the dashboard whenever `useAuth`'s session check comes back empty, and `AdminTab` only renders as a 6th tab when the logged-in user's role is `admin`. See the root README's [Authentication & Authorization](../README.md#authentication--authorization) for the backend side of the handshake and the full sequence diagram.
+
+- The session lives in `HttpOnly` cookies the browser manages automatically — the frontend never reads or stores a token itself.
+- `ActionsBar` hides (not just disables) "Import Wallet CSV" for the `user` role, so the permission boundary is visible rather than a button that would just 403.
+- An expired access token is invisible to the rest of the app: `api/client.js` retries once through `/api/auth/refresh` before surfacing any error.
 
 ---
 

@@ -11,7 +11,9 @@ sequenceDiagram
     participant Compute as "compute_allocations<br/>(pure function)"
     participant History as "HistoryService"
 
-    Client->>Handler: GET /api/allocations
+    Note over Client,Handler: CurrentUser extractor verifies the access_token<br/>cookie first — see docs/sequence-login.mmd.<br/>Any authenticated role may call this endpoint.
+
+    Client->>Handler: GET /api/allocations (Cookie: access_token=...)
     Handler->>Alloc: compute_and_record(api_key, market)
 
     Alloc->>Provider: fetch_latest(api_key)

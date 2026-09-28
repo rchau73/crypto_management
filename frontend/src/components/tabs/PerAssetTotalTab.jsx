@@ -60,8 +60,8 @@ export function PerAssetTotalTab({ rows, totalValue, isFiltered, filterKey }) {
       <Typography variant="body2" sx={{ color: "text.secondary", mb: 1 }}>
         Grouped by symbol; Group and BARCA columns are ignored in this view.
       </Typography>
-      <TableContainer component={Paper} sx={{ width: "100%" }}>
-        <Table sx={{ width: "100%", tableLayout: "auto" }}>
+      <TableContainer component={Paper} sx={{ maxWidth: "100%", overflowX: "auto" }}>
+        <Table sx={{ minWidth: 750 }}>
           <SortableTableHead columns={COLUMNS} sortConfig={sortConfig} onSort={toggleSort} />
           <TableBody>
             {paginatedRows.map((row, idx) => {

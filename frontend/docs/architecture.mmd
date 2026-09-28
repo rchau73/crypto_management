@@ -1,10 +1,14 @@
 flowchart TD
     subgraph APP["App.jsx — composition root"]
-        ROOT["Tab & filter state,\nderived totals & options"]
+        ROOT["Renders LoginPage while logged out,\nDashboard (tab & filter state) once logged in"]
+    end
+
+    subgraph AUTHUI["Auth UI"]
+        LOGIN["LoginPage\n(full-page swap when logged out)"]
     end
 
     subgraph LAYOUT["Layout components"]
-        HEADER["AppHeader (sticky)\n+ ActionsBar"]
+        HEADER["AppHeader (sticky)\n+ ActionsBar + Log Out"]
         STATS["StatTiles"]
         STATUS["StatusLine"]
         FILTERS["FiltersBar\n(active-filter chips)"]
@@ -17,6 +21,7 @@ flowchart TD
         T2["PerGroupTab"]
         T3["BarcaActualTab"]
         T4["DashboardTab"]
+        T5["AdminTab\n(role === admin only)"]
     end
 
     subgraph SHARED["Shared UI components"]
@@ -30,8 +35,10 @@ flowchart TD
     end
 
     subgraph HOOKS["hooks/ — state & data fetching"]
+        HAUTH["useAuth\n(session check, login, logout)"]
         HALLOC["useAllocations"]
         HHIST["useHistoryDashboard"]
+        HUSERS["useUsers\n(admin CRUD)"]
         HSORT["useSortableData"]
         HPAGE["usePagination"]
     end
@@ -43,13 +50,15 @@ flowchart TD
     end
 
     subgraph API["api/client.js"]
-        CLIENT["fetchAllocations()\nfetchHistory()\nimportWallets()"]
+        CLIENT["fetchAllocations() · fetchHistory() · importWallets()\nlogin() · logout() · fetchCurrentUser()\nfetchUsers() · createUser() · updateUser() · deleteUser()\n(every call: credentials: include + silent refresh-on-401)"]
     end
 
     THEME["theme.js\ndarkTheme · COLORS · colorForSeries"]
     BACKEND[("Rust backend\nGET/POST /api/*")]
 
-    ROOT --> HEADER
+    ROOT -->|owns| HAUTH
+    ROOT -->|logged out| LOGIN
+    ROOT -->|logged in| HEADER
     ROOT --> STATS
     ROOT --> STATUS
     ROOT --> FILTERS
@@ -59,7 +68,11 @@ flowchart TD
     ROOT --> T2
     ROOT --> T3
     ROOT --> T4
+    ROOT -->|role === admin| T5
     ROOT -->|owns| HALLOC
+
+    LOGIN -->|calls| HAUTH
+    T5 -->|owns| HUSERS
 
     TABS --> SHARED
     TABS --> HOOKS
@@ -68,8 +81,10 @@ flowchart TD
     CLIENT --> BACKEND
     TABS -.->|theme tokens| THEME
     SHARED -.->|theme tokens| THEME
+    AUTHUI -.->|theme tokens| THEME
 
     style APP fill:#1e293b,stroke:#fcd34d,color:#e5e7eb
+    style AUTHUI fill:#1e293b,stroke:#f472b6,color:#e5e7eb
     style LAYOUT fill:#1e293b,stroke:#93c5fd,color:#e5e7eb
     style TABS fill:#1e293b,stroke:#86efac,color:#e5e7eb
     style SHARED fill:#1e293b,stroke:#f0abfc,color:#e5e7eb

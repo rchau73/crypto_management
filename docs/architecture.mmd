@@ -3,29 +3,43 @@ flowchart TD
         H1["Axum HTTP handlers\n(api_allocations, api_history, import_wallets_handler)"]
     end
 
+    subgraph AUTHMOD["src/auth_handlers.rs — auth & admin HTTP glue"]
+        CU["CurrentUser extractor\n(verifies access_token cookie)"]
+        AH["/api/auth/* handlers\n(login, logout, refresh, me)"]
+        ADMH["/api/admin/users* handlers\n(require_role(Admin))"]
+    end
+
     subgraph USECASES["src/usecases/ — business logic"]
         CA["compute_allocations\n(pure function, no I/O)"]
         AS["AllocationsService"]
         HS["HistoryService"]
+        AUS["AuthService\n(argon2 verify, JWT issue/verify)"]
+        US["UserService\n(admin CRUD on users)"]
     end
 
     subgraph DOMAIN["src/domain/ — models & ports"]
-        MODELS["models.rs\nCrypto, WalletAllocation, snapshot rows"]
-        REPO_PORT["repository.rs\nHistoryRepo trait"]
+        MODELS["models.rs\nCrypto, WalletAllocation, User, Role, snapshot rows"]
+        REPO_PORT["repository.rs\nHistoryRepo, UserRepo, RefreshTokenRepo traits"]
         MD_PORT["market_data.rs\nCryptoProvider trait"]
     end
 
     subgraph INFRA["src/infra/ — adapters"]
-        SQLITE["sqlite/repo.rs\nSqliteRepo"]
+        SQLITE["sqlite/repo.rs\nSqliteRepo\n(implements all 3 repo traits)"]
         CMC["coinmarketcap.rs\nReqwestCryptoProvider"]
     end
 
+    H1 -->|requires| CU
     H1 -->|calls| AS
     H1 -->|calls| HS
+    AH -->|calls| AUS
+    ADMH -->|calls| US
+    CU -->|verifies via| AUS
     AS -->|calls| CA
     AS -->|depends on| MD_PORT
     AS -->|depends on| REPO_PORT
     HS -->|depends on| REPO_PORT
+    AUS -->|depends on| REPO_PORT
+    US -->|depends on| REPO_PORT
     CA -->|uses| MODELS
 
     SQLITE -.->|implements| REPO_PORT
@@ -33,8 +47,10 @@ flowchart TD
 
     MAIN -->|constructs & injects| SQLITE
     MAIN -->|constructs & injects| CMC
+    MAIN -->|mounts| AUTHMOD
 
     style DOMAIN fill:#1f2937,stroke:#93c5fd,color:#e5e7eb
     style USECASES fill:#1e293b,stroke:#86efac,color:#e5e7eb
     style INFRA fill:#1e293b,stroke:#fca5a5,color:#e5e7eb
     style MAIN fill:#1e293b,stroke:#fcd34d,color:#e5e7eb
+    style AUTHMOD fill:#1e293b,stroke:#f0abfc,color:#e5e7eb

@@ -18,6 +18,12 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "macros"] }
 anyhow = "1.0"
+argon2 = "0.5"
+jsonwebtoken = { version = "9", default-features = false }
+axum-extra = { version = "0.10", features = ["cookie"] }
+rand = "0.8"
+sha2 = "0.10"
+time = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
