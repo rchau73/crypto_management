@@ -35,7 +35,11 @@ pub trait HistoryRepo: Send + Sync {
     ) -> RepoResult<Vec<TotalSnapshot>>;
 
     // Wallet allocations ledger (append-only)
-    // Insert a new wallet allocation record (do not delete or update existing rows)
+    // Insert a new wallet allocation record (do not delete or update existing rows).
+    // No production caller needs a single-row insert anymore (CSV import
+    // batches via bulk_insert_wallet_allocations below) — kept for tests
+    // that need to set up one specific row at a time.
+    #[allow(dead_code)]
     async fn insert_wallet_allocation(&self, wa: &WalletAllocation) -> RepoResult<()>;
     // Insert several rows as one atomic transaction — the "Save all" bulk
     // portfolio edit either fully lands or fully fails, never half-applies.

@@ -59,6 +59,7 @@ function Dashboard({ user, onLogout }) {
     loading,
     importing,
     importStatus,
+    importError,
     lastUpdate,
     refresh,
     importFromCsv,
@@ -107,7 +108,7 @@ function Dashboard({ user, onLogout }) {
         loading={loading}
         onRefresh={refresh}
         importing={importing}
-        onImport={() => importFromCsv()}
+        onImport={importFromCsv}
         canImport={canImport}
         username={user.username}
         role={user.role}
@@ -117,7 +118,7 @@ function Dashboard({ user, onLogout }) {
 
       <Container maxWidth="xl" sx={{ py: 3 }}>
         <StatTiles totalWalletValue={totalWalletValue} />
-        <StatusLine lastUpdate={lastUpdate} importStatus={importStatus} />
+        <StatusLine lastUpdate={lastUpdate} importStatus={importStatus} importError={importError} />
 
         {hasData && DATA_TAB_KEYS.has(activeKey) && (
           <FiltersBar

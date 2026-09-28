@@ -4,6 +4,7 @@ mod usecases;
 
 mod auth_handlers;
 mod targets_handlers;
+mod wallet_handlers;
 
 use axum::extract::Query;
 use axum::extract::State;
@@ -21,7 +22,7 @@ use tracing::{error, info, warn};
 
 use crate::auth_handlers::{
     CurrentUser, create_user_handler, delete_user_handler, list_users_handler, login_handler,
-    logout_handler, me_handler, refresh_handler, require_role, update_user_handler,
+    logout_handler, me_handler, refresh_handler, update_user_handler,
 };
 use crate::domain::market_data::{CryptoProvider, EquityProvider};
 use crate::domain::models::Role;
@@ -35,6 +36,7 @@ use crate::targets_handlers::{
     save_portfolio_targets_handler,
 };
 use crate::usecases::auth_service::hash_password;
+use crate::wallet_handlers::{import_wallets_handler, import_wallets_upload_handler};
 use sqlx::SqlitePool;
 use usecases::allocations_service::AllocationsService;
 use usecases::history_service::HistoryService;
@@ -154,37 +156,6 @@ async fn api_history(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ImportPayload {
-    path: Option<String>,
-}
-
-#[tracing::instrument(skip(state))]
-async fn import_wallets_handler(
-    current: CurrentUser,
-    State(state): State<AppState>,
-    axum::extract::Json(payload): axum::extract::Json<ImportPayload>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    require_role(&current, Role::Manager)?;
-    let path = payload
-        .path
-        .unwrap_or_else(|| "wallet_allocations.csv".to_string());
-    let svc = HistoryService::new(state.history_repo.clone(), state.history_repo.clone());
-    match svc.import_wallet_allocations_from_path(&path).await {
-        Ok(count) => {
-            info!(path = %path, imported = count, "Imported wallet allocations");
-            Ok(Json(json!({"imported": count})))
-        }
-        Err(e) => {
-            error!(error = %e, path = %path, "Failed to import wallet allocations");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed import: {}", e)})),
-            ))
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv().ok();
@@ -247,6 +218,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route(
             "/api/import_wallets",
             axum::routing::post(import_wallets_handler),
+        )
+        .route(
+            "/api/import_wallets/upload",
+            axum::routing::post(import_wallets_upload_handler),
         )
         .route("/api/auth/login", axum::routing::post(login_handler))
         .route("/api/auth/logout", axum::routing::post(logout_handler))

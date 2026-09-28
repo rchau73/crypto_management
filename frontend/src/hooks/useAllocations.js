@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fetchAllocations, importWallets } from "../api/client";
+import { fetchAllocations, uploadWalletCsv } from "../api/client";
 
 // Owns the "live allocations" data: the per-asset/per-group/per-BARCA
 // breakdown from /api/allocations, plus the CSV import action that feeds it.
@@ -11,6 +11,7 @@ export function useAllocations() {
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importStatus, setImportStatus] = useState("");
+  const [importError, setImportError] = useState("");
   const [lastUpdate, setLastUpdate] = useState(null);
 
   const refresh = async () => {
@@ -28,15 +29,19 @@ export function useAllocations() {
     setLoading(false);
   };
 
-  const importFromCsv = async (path = "wallet_allocations.csv") => {
+  const importFromCsv = async (file) => {
     setImporting(true);
     setImportStatus("");
+    setImportError("");
     try {
-      const data = await importWallets(path);
+      const data = await uploadWalletCsv(file);
       setImportStatus(`Imported ${data.imported ?? 0} wallet rows from CSV`);
       await refresh();
     } catch (err) {
-      alert("Failed to import wallet allocations: " + err.message);
+      // The backend tells apart "you uploaded a bad file" (400, message is
+      // already written for a human) from a real server failure — either
+      // way, show it inline instead of an alert() that blocks the page.
+      setImportError(err.message);
     }
     setImporting(false);
   };
@@ -49,6 +54,7 @@ export function useAllocations() {
     loading,
     importing,
     importStatus,
+    importError,
     lastUpdate,
     refresh,
     importFromCsv,

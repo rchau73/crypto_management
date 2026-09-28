@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchAllocations, fetchCurrentUser, login } from "./client";
+import { fetchAllocations, fetchCurrentUser, login, uploadWalletCsv } from "./client";
 
 function jsonResponse(status, body) {
   return {
@@ -76,5 +76,22 @@ describe("apiFetch (via fetchAllocations)", () => {
       .mockResolvedValueOnce(jsonResponse(200, { username: "alice", role: "user" })); // retried /me
     const user = await fetchCurrentUser();
     expect(user).toEqual({ username: "alice", role: "user" });
+  });
+
+  it("uploadWalletCsv sends the file as multipart form data, not JSON", async () => {
+    fetch.mockResolvedValueOnce(jsonResponse(200, { imported: 3 }));
+    const file = new File(["symbol,group\nBTC,Core\n"], "wallet.csv", { type: "text/csv" });
+
+    const result = await uploadWalletCsv(file);
+
+    expect(result).toEqual({ imported: 3 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toContain("/api/import_wallets/upload");
+    expect(options.method).toBe("POST");
+    expect(options.body).toBeInstanceOf(FormData);
+    expect(options.body.get("file")).toBe(file);
+    // No explicit Content-Type — the browser must set multipart's boundary itself.
+    expect(options.headers).toBeUndefined();
   });
 });
