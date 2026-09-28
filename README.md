@@ -28,13 +28,15 @@ Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 
 | Layer | Path | Responsibility |
 |---|---|---|
-| Domain | `src/domain/models.rs` | Plain structs shared across layers (`Crypto`, `WalletAllocation`, snapshot rows). No logic, no I/O. |
-| Domain (ports) | `src/domain/repository.rs`, `src/domain/market_data.rs` | Traits (`HistoryRepo`, `CryptoProvider`) that `usecases` code against instead of concrete databases/APIs. |
+| Domain | `src/domain/models.rs` | Plain structs shared across layers (`Crypto`, `WalletAllocation`, `User`, `Role`, snapshot rows). No logic, no I/O. |
+| Domain (ports) | `src/domain/repository.rs`, `src/domain/market_data.rs` | Traits (`HistoryRepo`, `CryptoProvider`, `UserRepo`, `RefreshTokenRepo`) that `usecases` code against instead of concrete databases/APIs. |
 | Use cases | `src/usecases/compute_allocations.rs` | Pure function: wallet + prices + targets in, per-asset/per-group/per-BARCA breakdown out. No I/O — the easiest thing in the codebase to unit test. |
 | Use cases | `src/usecases/allocations_service.rs`, `src/usecases/history_service.rs` | Orchestrate ports to fetch prices, compute allocations, persist snapshots, and serve history — the application's actual behavior. |
-| Infra (adapters) | `src/infra/sqlite/repo.rs` | Implements `HistoryRepo` against SQLite via `sqlx`. |
+| Use cases | `src/usecases/auth_service.rs`, `src/usecases/user_service.rs` | Password hashing (argon2id) + JWT issue/verify + login/refresh/logout; admin CRUD on user accounts. See [Authentication & Authorization](#authentication--authorization). |
+| Infra (adapters) | `src/infra/sqlite/repo.rs` | One `SqliteRepo` implementing `HistoryRepo`, `UserRepo`, and `RefreshTokenRepo` against SQLite via `sqlx`. |
 | Infra (adapters) | `src/infra/coinmarketcap.rs` | Implements `CryptoProvider` against the CoinMarketCap REST API; owns that API's wire format and maps it into the domain `Crypto` type. |
-| Composition root | `src/main.rs` | Axum route handlers (thin — they just call into `usecases`), env/config loading, DB pool + migrations, and wiring the concrete adapters into `AppState` at startup. |
+| HTTP glue | `src/auth_handlers.rs` | The `CurrentUser` Axum extractor (verifies the `access_token` cookie) and every `/api/auth/*` / `/api/admin/users*` handler — kept out of `main.rs` so it stays composition-root-sized. |
+| Composition root | `src/main.rs` | Axum route handlers (thin — they just call into `usecases`), env/config loading, DB pool + migrations, CORS, and wiring the concrete adapters into `AppState` at startup. |
 | Scripts | `src/bin/*.rs` | Standalone CLI utilities (CSV importer, historical price exporter) — deliberately separate from the server binary. |
 
 ### Sequence diagram: `GET /api/allocations`
@@ -45,11 +47,20 @@ Source: [`docs/sequence-allocations.mmd`](docs/sequence-allocations.mmd)
 
 ![Sequence diagram for GET /api/allocations, from the Axum handler through AllocationsService, the CryptoProvider and AllocationStore ports, compute_allocations, and snapshot persistence](docs/sequence-allocations.png)
 
+Every route above requires a valid `access_token` cookie — see the login handshake below for how that cookie gets there.
+
+### Sequence diagram: the login handshake
+
+Source: [`docs/sequence-login.mmd`](docs/sequence-login.mmd)
+
+![Sequence diagram for the login handshake: POST /api/auth/login verifying a password with argon2, issuing a JWT access token and an opaque refresh token, then the CurrentUser extractor verifying that access token on every subsequent request](docs/sequence-login.png)
+
 ### Testing strategy
 
 - **Unit tests** for `compute_allocations` (`src/usecases/compute_allocations.rs`) cover the happy path plus edge cases: unknown symbols, zero total value (division-by-zero guard), and duplicate wallet rows for the same asset aggregating correctly.
-- **Repository tests** (`src/infra/sqlite/repo.rs`) run against a real in-memory SQLite database and the actual migrations, not a mock — verifying the SQL and the schema together.
-- **An end-to-end integration test** (`src/tests/integration.rs`) drives the real Axum router in-process, with fake `CryptoProvider`/`AllocationStore` implementations standing in for the network and the CSV file — proving the whole request → handler → use case → repo → response chain actually works together.
+- **Unit tests** for `auth_service.rs` / `user_service.rs` cover password hashing (never stores or compares plaintext, two hashes of the same password differ), JWT round-tripping (wrong secret / garbage input rejected), refresh-token generation, and role validation on user create/update.
+- **Repository tests** (`src/infra/sqlite/repo.rs`) run against a real in-memory SQLite database and the actual migrations, not a mock — verifying the SQL and the schema together, including the user/refresh-token tables (duplicate usernames rejected, partial updates only touch the fields passed, deleting a user clears their refresh tokens).
+- **End-to-end integration tests** (`src/tests/integration.rs`) drive the real Axum router in-process, with fake `CryptoProvider`/`AllocationStore` implementations standing in for the network and the CSV file. One test performs a real login (POST credentials → real argon2 verify → real JWT issued → cookie extracted from the response) and then uses that cookie for every subsequent request, proving the whole handshake works end to end; another asserts the protected routes return 401 with no cookie at all.
 
 Run everything with `cargo test`; `cargo clippy --all-targets` is kept warning-free.
 
@@ -72,6 +83,28 @@ Source: [`docs/data-model.mmd`](docs/data-model.mmd)
 - **`history_assets` / `history_groups` / `history_barca` / `history_totals`** — one snapshot batch per `timestamp`, written together by `HistoryService::persist_snapshots` every time `/api/allocations` runs.
 - **`asset_variance_history` / `group_variance_history` / `barca_variance_history`** (views) — add `deviation_percent` (and, for assets, `value_deviation`) on top of the raw snapshots; these are what `/api/history` actually serves.
 - **`allocations`** — audit trail of the full computed JSON payload per run, independent of the per-row snapshots.
+- **`users`** — one row per account (`username`, an argon2id `password_hash`, and a `role` of `admin`/`manager`/`user`). No public sign-up endpoint exists anywhere — every row is created by an Admin via the Admin tab, except the one bootstrap Admin seeded from env vars on first boot.
+- **`refresh_tokens`** — one row per login. Stores only a SHA-256 hash of the opaque token the client actually holds, so a database leak alone can't be used to forge a session; `revoked_at` is set on logout.
+
+---
+
+## Authentication & Authorization
+
+Three fixed roles, checked with a plain rank comparison (`Admin > Manager > User`) — no policy engine, no external identity provider, nothing beyond what a single-digit-user app actually needs:
+
+| Role | Can do |
+|---|---|
+| **User** | View allocations, per-group/BARCA tables, and the history dashboard. |
+| **Manager** | Everything User can, plus import a wallet CSV (`POST /api/import_wallets`). |
+| **Admin** | Everything Manager can, plus create/edit/delete user accounts (`/api/admin/users*`). |
+
+- **Session**: a short-lived (15 min) JWT access token plus a longer-lived (14 day) opaque refresh token, both `HttpOnly`/`SameSite=Lax` cookies — never `localStorage`, which is readable by any injected script. The frontend's `api/client.js` transparently calls `/api/auth/refresh` once on a 401 and retries, so an expired access token never interrupts an active session.
+- **Passwords**: `argon2id` via the `argon2` crate. Never compared or stored in plaintext.
+- **No public registration**: every account is created by an Admin. The very first Admin is seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars on first boot, if the `users` table is empty (see `ensure_admin_seeded` in `main.rs`).
+- **CORS**: credentialed (cookie-carrying) requests can't use a wildcard origin — `FRONTEND_ORIGIN` must name the frontend's exact origin.
+- **Deliberately not used**: no API gateway (Kong et al.) — that solves problems (routing across many services, centralizing auth for many teams) this single-binary, handful-of-users app doesn't have, and would add a second stateful service to operate and patch for no benefit here. If you outgrow this, a lightweight reverse proxy (Caddy, for automatic HTTPS) or a perimeter layer (Cloudflare Tunnel + Access, useful specifically for secure remote/mobile access without opening an inbound port) are the right next steps — not a gateway.
+
+Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS).
 
 ---
 
@@ -94,15 +127,15 @@ Source: [`docs/data-model.mmd`](docs/data-model.mmd)
 
 2. **Set up your environment variables:**
 
-   Create a `.env` file in the project root with your CoinMarketCap API key **and your market name**:
+   Copy `.env.example` to `.env` and fill it in:
 
-   ```
-   API_KEY=your_coinmarketcap_api_key
-   MARKET=your_market_name
+   ```sh
+   cp .env.example .env
    ```
 
    - `API_KEY`: Your CoinMarketCap API key.
    - `CURRENT_MARKET`: The market name to use for filtering BARCA targets (e.g., `BullMarket`, `BearMarket`, etc).
+   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`: see [Authentication & Authorization](#authentication--authorization) — all required.
 
 3. **Prepare your wallet allocations file:**
 
@@ -158,12 +191,22 @@ Notes:
 When the backend starts it checks whether `wallet_allocations_current` is empty and, if so, seeds it from `wallet_allocations.csv` (override the path via `WALLET_ALLOCATIONS_PATH`). You can also trigger the import manually:
 
 - CLI: `cargo run --bin import_wallet_allocations -- wallet_allocations.csv`
-- API: `curl -X POST http://127.0.0.1:3001/api/import_wallets -H "Content-Type: application/json" -d '{"path":"wallet_allocations.csv"}'`
-- UI: click the **Import Wallet CSV** button next to “Update Prices & Show Distribution”.
+- API: requires a Manager+ session cookie (see below) — `curl -b cookies.txt -X POST http://127.0.0.1:3001/api/import_wallets -H "Content-Type: application/json" -d '{"path":"wallet_allocations.csv"}'`
+- UI: click the **Import Wallet CSV** button next to “Update Prices & Show Distribution” (hidden for the User role).
 
 5. **Test the API:**
 
-   Visit [http://127.0.0.1:3001/api/allocations](http://127.0.0.1:3001/api/allocations) in your browser or use `curl` to see the JSON output.
+   Every route requires a login first — the bootstrap Admin from your `.env`:
+
+   ```sh
+   curl -c cookies.txt -X POST http://127.0.0.1:3001/api/auth/login \
+     -H "Content-Type: application/json" \
+     -d '{"username":"'"$ADMIN_USERNAME"'","password":"'"$ADMIN_PASSWORD"'"}'
+
+   curl -b cookies.txt http://127.0.0.1:3001/api/allocations
+   ```
+
+   Visiting [http://127.0.0.1:3001/api/allocations](http://127.0.0.1:3001/api/allocations) directly in a browser tab will return `401` — there's no session cookie without going through the frontend's login page or the `curl` handshake above.
 
 ---
 
@@ -231,6 +274,7 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
 
 ## Notable Recent Changes
 
+- **Authentication:** Login required for every route. Three roles (Admin/Manager/User) with an Admin-only user management tab — see [Authentication & Authorization](#authentication--authorization).
 - **Tabs:** All tables and charts are now in tabs for easy navigation.
 - **Per-Asset Table:** Added filters for Asset, Group, and BARCA (combinable). Pagination is applied after filtering (20 per page).
 - **Per-Group Table:** "Target %" column replaced by "Current Value ($)".
@@ -243,8 +287,11 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
 
 ## Troubleshooting
 
-- **CORS errors:**  
-  The backend is configured to allow requests from any origin. If you change ports or deploy, adjust the CORS settings in `main.rs`.
+- **CORS / cookie errors:**  
+  `FRONTEND_ORIGIN` must exactly match the origin the frontend is actually served from (protocol + host + port). Credentialed requests can't use a wildcard origin, so a mismatch here shows up as the browser silently dropping the session cookie rather than a visible CORS error.
+
+- **401 on every request after logging in:**  
+  Check `JWT_SECRET` is set and unchanged since login (changing it invalidates every existing session), and that `COOKIE_SECURE` matches how you're actually serving the app (`false` over plain HTTP, `true` over HTTPS — browsers silently drop `Secure` cookies over HTTP).
 
 - **API key errors:**  
   Make sure your `.env` file is present and contains a valid CoinMarketCap API key and the `MARKET` variable.

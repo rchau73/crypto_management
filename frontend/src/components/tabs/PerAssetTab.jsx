@@ -60,8 +60,8 @@ export function PerAssetTab({ rows, totalValue, isFiltered, filterKey }) {
           )}
         </Box>
       </Typography>
-      <TableContainer component={Paper} sx={{ width: "100%" }}>
-        <Table sx={{ width: "100%", tableLayout: "auto" }}>
+      <TableContainer component={Paper} sx={{ maxWidth: "100%", overflowX: "auto" }}>
+        <Table sx={{ minWidth: 900 }}>
           <SortableTableHead columns={COLUMNS} sortConfig={sortConfig} onSort={toggleSort} />
           <TableBody>
             {paginatedRows.map((row, idx) => {

@@ -1,0 +1,40 @@
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Handler as "Axum handler<br/>login_handler"
+    participant Auth as "AuthService"
+    participant UserRepo as "UserRepo port<br/>(SqliteRepo)"
+    participant TokenRepo as "RefreshTokenRepo port<br/>(SqliteRepo)"
+    participant DB as "SQLite"
+
+    Note over Client,DB: The handshake — POST /api/auth/login
+
+    Client->>Handler: POST /api/auth/login {username, password}
+    Handler->>Auth: login(username, password)
+    Auth->>UserRepo: find_user_by_username(username)
+    UserRepo->>DB: SELECT * FROM users WHERE username = ?
+    DB-->>UserRepo: row (or none)
+    UserRepo-->>Auth: Option<User>
+
+    alt user not found or argon2 verify fails
+        Auth-->>Handler: Err(InvalidCredentials)
+        Handler-->>Client: 401 Unauthorized
+    else password verified
+        Auth->>Auth: issue_access_token()<br/>(JWT, HS256, 15 min TTL)
+        Auth->>Auth: generate_refresh_token()<br/>(32 random bytes, hex)
+        Auth->>TokenRepo: store_refresh_token(user_id, sha256(token), expires_at)
+        TokenRepo->>DB: INSERT INTO refresh_tokens ...
+        Auth-->>Handler: access_token, refresh_token, user
+        Handler-->>Client: 200 OK<br/>Set-Cookie: access_token (HttpOnly, 15 min)<br/>Set-Cookie: refresh_token (HttpOnly, Path=/api/auth, 14 days)
+    end
+
+    Note over Client,DB: Every subsequent request — the CurrentUser extractor
+
+    Client->>Handler: GET /api/allocations<br/>Cookie: access_token=...
+    Handler->>Handler: CurrentUser::from_request_parts()<br/>verify JWT signature + expiry
+    alt token missing, expired, or invalid
+        Handler-->>Client: 401 Unauthorized
+        Note right of Client: frontend transparently calls<br/>POST /api/auth/refresh once,<br/>then retries the original request
+    else token valid
+        Handler-->>Client: 200 OK (role-appropriate response)
+    end

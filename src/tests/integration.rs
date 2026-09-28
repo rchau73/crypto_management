@@ -1,58 +1,45 @@
 //! End-to-end tests that drive the real Axum router in-process — no real
-//! network or CoinMarketCap key required, only fakes for the two external
-//! dependencies (market data, wallet CSV targets).
+//! network or CoinMarketCap/brapi/Finnhub key required, only fakes for the
+//! external market-data dependency. BARCA targets are seeded into the same
+//! in-memory DB the router uses, since they're DB-authoritative.
 
-use crate::csv_store::AllocationStore;
-use crate::domain::models::{Crypto, WalletAllocation};
-use crate::domain::repository::HistoryRepo;
+use crate::auth_handlers::{login_handler, logout_handler, me_handler};
+use crate::domain::market_data::MockEquityProvider;
+use crate::domain::models::{MarketQuote, WalletAllocation};
+use crate::domain::repository::{
+    BarcaTargetInput, BarcaTargetRepo, HistoryRepo, NewUser, UserRepo,
+};
 use crate::infra::coinmarketcap::MockCryptoProvider;
-use crate::{AppState, api_allocations, api_history};
+use crate::usecases::auth_service::hash_password;
+use crate::{AppState, api_allocations, api_history, import_wallets_handler};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
+use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::routing::get;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
-use std::error::Error;
 use std::sync::Arc;
 use tower::ServiceExt;
-
-/// A fake `AllocationStore` that returns fixed BARCA targets instead of
-/// reading a CSV file, so this test doesn't depend on repo-root file state.
-struct FakeAllocationStore {
-    targets: HashMap<String, f64>,
-}
-
-impl AllocationStore for FakeAllocationStore {
-    fn read_wallet_allocations(
-        &self,
-        _path: &str,
-    ) -> Result<Vec<WalletAllocation>, Box<dyn Error + Send + Sync>> {
-        Ok(vec![])
-    }
-
-    fn read_barca_allocations(
-        &self,
-        _path: &str,
-        _current_market: &str,
-    ) -> Result<HashMap<String, f64>, Box<dyn Error + Send + Sync>> {
-        Ok(self.targets.clone())
-    }
-}
 
 async fn body_json(res: axum::response::Response) -> serde_json::Value {
     let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
-#[tokio::test]
-async fn allocations_and_history_round_trip_through_the_real_router() {
-    unsafe {
-        std::env::set_var("API_KEY", "test");
-        std::env::remove_var("CURRENT_MARKET");
-    }
+/// Every `Set-Cookie` header from a response, joined into one `Cookie` header
+/// value suitable for the next request — this is what a real browser does.
+fn cookie_header_from_response(res: &axum::response::Response) -> String {
+    res.headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|set_cookie| set_cookie.split(';').next())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
-    let crypto = Crypto {
+async fn build_test_app() -> (Router, String) {
+    let crypto = MarketQuote {
         symbol: "BTC".to_string(),
         price: 10.0,
         market_cap: 0.0,
@@ -81,6 +68,7 @@ async fn allocations_and_history_round_trip_through_the_real_router() {
             current_quantity: Some(1.0),
             last_price: Some(10.0),
             notes: Some("Ledger".to_string()),
+            asset_class: "crypto".to_string(),
             created_at: None,
         },
         WalletAllocation {
@@ -92,6 +80,7 @@ async fn allocations_and_history_round_trip_through_the_real_router() {
             current_quantity: Some(0.5),
             last_price: Some(10.0),
             notes: Some("Binance".to_string()),
+            asset_class: "crypto".to_string(),
             created_at: None,
         },
     ];
@@ -99,23 +88,122 @@ async fn allocations_and_history_round_trip_through_the_real_router() {
         repo.insert_wallet_allocation(&wa).await.unwrap();
     }
 
-    let provider = Arc::new(MockCryptoProvider::new(vec![crypto]));
-    let allocation_store = Arc::new(FakeAllocationStore {
-        targets: HashMap::from([("Base".to_string(), 100.0)]),
-    });
+    repo.replace_barca_targets(
+        "BullMarket",
+        &[BarcaTargetInput {
+            barca: "Base",
+            target_percent: 100.0,
+        }],
+        None,
+    )
+    .await
+    .unwrap();
+
+    let password_hash = hash_password("correct-horse-battery-staple").unwrap();
+    UserRepo::create_user(
+        &repo,
+        NewUser {
+            username: "tester",
+            password_hash: &password_hash,
+            role: "manager",
+            email: "tester@example.com",
+            phone: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let crypto_provider = Arc::new(MockCryptoProvider::new(vec![crypto]));
+    let br_equity_provider = Arc::new(MockEquityProvider::new(vec![]));
+    let us_equity_provider = Arc::new(MockEquityProvider::new(vec![]));
     let app_state = AppState {
-        provider,
+        crypto_provider,
+        br_equity_provider,
+        us_equity_provider,
         history_repo: Arc::new(repo),
-        allocation_store,
+        jwt_secret: Arc::new(b"test-only-jwt-secret-do-not-use-in-prod".to_vec()),
     };
 
     let app = Router::new()
         .route("/api/allocations", get(api_allocations))
         .route("/api/history", get(api_history))
+        .route(
+            "/api/import_wallets",
+            axum::routing::post(import_wallets_handler),
+        )
+        .route("/api/auth/login", axum::routing::post(login_handler))
+        .route("/api/auth/logout", axum::routing::post(logout_handler))
+        .route("/api/auth/me", get(me_handler))
         .with_state(app_state);
+
+    (app, "correct-horse-battery-staple".to_string())
+}
+
+async fn login(app: &Router, password: &str) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"username":"tester","password":"{password}"}}"#
+        )))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert!(
+        res.status().is_success(),
+        "login should succeed with the right password"
+    );
+    cookie_header_from_response(&res)
+}
+
+#[tokio::test]
+async fn protected_routes_reject_requests_with_no_session_cookie() {
+    let (app, _password) = build_test_app().await;
 
     let req = Request::builder()
         .uri("/api/allocations")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+    let req = Request::builder()
+        .uri("/api/history?level=totals")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_rejects_the_wrong_password_and_never_authorizes_the_caller() {
+    let (app, _password) = build_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"username":"tester","password":"totally-wrong"}"#,
+        ))
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn allocations_and_history_round_trip_after_a_real_login_handshake() {
+    unsafe {
+        std::env::set_var("API_KEY", "test");
+        std::env::remove_var("CURRENT_MARKET");
+    }
+
+    let (app, password) = build_test_app().await;
+    let cookie = login(&app, &password).await;
+
+    let req = Request::builder()
+        .uri("/api/allocations")
+        .header(COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
@@ -127,6 +215,7 @@ async fn allocations_and_history_round_trip_through_the_real_router() {
 
     let req_totals = Request::builder()
         .uri("/api/history?level=totals")
+        .header(COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
     let totals_res = app.clone().oneshot(req_totals).await.unwrap();
@@ -136,6 +225,7 @@ async fn allocations_and_history_round_trip_through_the_real_router() {
 
     let req_assets = Request::builder()
         .uri("/api/history?level=assets")
+        .header(COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
     let assets_res = app.clone().oneshot(req_assets).await.unwrap();
@@ -147,8 +237,34 @@ async fn allocations_and_history_round_trip_through_the_real_router() {
 
     let req_groups = Request::builder()
         .uri("/api/history?level=groups")
+        .header(COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
-    let groups_res = app.oneshot(req_groups).await.unwrap();
+    let groups_res = app.clone().oneshot(req_groups).await.unwrap();
     assert!(groups_res.status().is_success());
+
+    // `me` should reflect the account that just logged in.
+    let req_me = Request::builder()
+        .uri("/api/auth/me")
+        .header(COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let me_res = app.clone().oneshot(req_me).await.unwrap();
+    assert!(me_res.status().is_success());
+    let me_json = body_json(me_res).await;
+    assert_eq!(me_json["username"], "tester");
+    assert_eq!(me_json["role"], "manager");
+    assert_eq!(me_json["email"], "tester@example.com");
+
+    // After logout, the same access-token cookie is still cryptographically
+    // valid (it's short-lived and stateless) — but the refresh token backing
+    // this session has been revoked, which is what logout actually protects.
+    let req_logout = Request::builder()
+        .method("POST")
+        .uri("/api/auth/logout")
+        .header(COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let logout_res = app.oneshot(req_logout).await.unwrap();
+    assert!(logout_res.status().is_success());
 }

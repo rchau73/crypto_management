@@ -1,9 +1,9 @@
-import { AppBar, Toolbar, Typography } from "@mui/material";
+import { AppBar, Button, Stack, Toolbar, Typography } from "@mui/material";
 import { ActionsBar } from "./ActionsBar";
 
 // Sticky top bar: title + the two primary actions stay reachable while
 // scrolling a long table, instead of scrolling away with the rest of the page.
-export function AppHeader({ loading, onRefresh, importing, onImport }) {
+export function AppHeader({ loading, onRefresh, importing, onImport, canImport, username, role, onLogout }) {
   return (
     <AppBar
       position="sticky"
@@ -20,7 +20,15 @@ export function AppHeader({ loading, onRefresh, importing, onImport }) {
         <Typography variant="h6" sx={{ fontWeight: 700, mr: "auto" }}>
           Wallet Allocations
         </Typography>
-        <ActionsBar loading={loading} onRefresh={onRefresh} importing={importing} onImport={onImport} />
+        <ActionsBar loading={loading} onRefresh={onRefresh} importing={importing} onImport={onImport} canImport={canImport} />
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="body2" sx={{ color: "text.secondary" }}>
+            {username} ({role})
+          </Typography>
+          <Button size="small" variant="text" onClick={onLogout}>
+            Log Out
+          </Button>
+        </Stack>
       </Toolbar>
     </AppBar>
   );

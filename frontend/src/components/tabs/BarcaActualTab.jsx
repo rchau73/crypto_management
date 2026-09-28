@@ -50,7 +50,7 @@ export function BarcaActualTab({ barcaAllocations, barcaActualAllocations }) {
         </Table>
       </TableContainer>
       {(targetPieData.length > 0 || actualPieData.length > 0) && (
-        <Box sx={{ display: "flex", gap: 4, justifyContent: "center", mt: 4 }}>
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 4, justifyContent: "center", mt: 4 }}>
           {targetPieData.length > 0 && (
             <Box sx={{ flex: 1, maxWidth: 400 }}>
               <Typography variant="h6" sx={{ mb: 2 }}>

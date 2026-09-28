@@ -3,7 +3,7 @@
 //! to leak into — everything past `fetch_latest` deals in `domain::models::Crypto`.
 
 use crate::domain::market_data::{CryptoProvider, MarketDataResult};
-use crate::domain::models::Crypto;
+use crate::domain::models::MarketQuote;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -55,9 +55,9 @@ struct PriceInfo {
     tvl: Option<f64>,
 }
 
-impl From<CryptoData> for Crypto {
+impl From<CryptoData> for MarketQuote {
     fn from(c: CryptoData) -> Self {
-        Crypto {
+        MarketQuote {
             symbol: c.symbol,
             price: c.quote.usd.price,
             market_cap: c.quote.usd.market_cap,
@@ -89,7 +89,7 @@ impl Default for ReqwestCryptoProvider {
 
 #[async_trait]
 impl CryptoProvider for ReqwestCryptoProvider {
-    async fn fetch_latest(&self, api_key: &str) -> MarketDataResult<Vec<Crypto>> {
+    async fn fetch_latest(&self, api_key: &str) -> MarketDataResult<Vec<MarketQuote>> {
         let mut params = HashMap::new();
         params.insert("limit", "1000");
 
@@ -103,19 +103,19 @@ impl CryptoProvider for ReqwestCryptoProvider {
             .await?;
 
         let parsed: ApiResponse = response.json().await?;
-        Ok(parsed.data.into_iter().map(Crypto::from).collect())
+        Ok(parsed.data.into_iter().map(MarketQuote::from).collect())
     }
 }
 
 /// Fake provider for tests — returns fixed data instead of calling out to CoinMarketCap.
 #[cfg(test)]
 pub struct MockCryptoProvider {
-    pub data: Vec<Crypto>,
+    pub data: Vec<MarketQuote>,
 }
 
 #[cfg(test)]
 impl MockCryptoProvider {
-    pub fn new(data: Vec<Crypto>) -> Self {
+    pub fn new(data: Vec<MarketQuote>) -> Self {
         Self { data }
     }
 }
@@ -123,7 +123,7 @@ impl MockCryptoProvider {
 #[cfg(test)]
 #[async_trait]
 impl CryptoProvider for MockCryptoProvider {
-    async fn fetch_latest(&self, _api_key: &str) -> MarketDataResult<Vec<Crypto>> {
+    async fn fetch_latest(&self, _api_key: &str) -> MarketDataResult<Vec<MarketQuote>> {
         Ok(self.data.clone())
     }
 }

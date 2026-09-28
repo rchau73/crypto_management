@@ -1,23 +1,23 @@
-use crate::domain::models::Crypto;
+use crate::domain::models::MarketQuote;
 use crate::domain::models::WalletAllocation as DomainWalletAllocation;
 use serde_json::json;
 use std::collections::HashMap;
 
 pub fn compute_allocations(
     allocations: &[DomainWalletAllocation],
-    cryptos: &[Crypto],
+    quotes: &[MarketQuote],
     barca_targets: &HashMap<String, f64>,
 ) -> serde_json::Value {
     // Build crypto lookup map
-    let crypto_map: HashMap<String, &Crypto> =
-        cryptos.iter().map(|c| (c.symbol.clone(), c)).collect();
+    let quote_map: HashMap<String, &MarketQuote> =
+        quotes.iter().map(|c| (c.symbol.clone(), c)).collect();
 
     let mut asset_values: HashMap<(String, String, String), (f64, f64)> = HashMap::new(); // (value, quantity)
     let mut total_wallet_value = 0.0;
 
     for alloc in allocations {
         let symbol = alloc.symbol.clone();
-        if let Some(crypto) = crypto_map.get(&symbol) {
+        if let Some(crypto) = quote_map.get(&symbol) {
             let price = crypto.price;
             let qty = alloc.current_quantity.unwrap_or(0.0);
             let value = qty * price;
@@ -39,7 +39,7 @@ pub fn compute_allocations(
     let per_asset: Vec<_> = asset_values
         .iter()
         .map(|((symbol, group, barca), (value, quantity))| {
-            let price = crypto_map.get(symbol).map(|c| c.price).unwrap_or(0.0);
+            let price = quote_map.get(symbol).map(|c| c.price).unwrap_or(0.0);
             let target_percent = allocations
                 .iter()
                 .filter(|a| {
@@ -136,12 +136,20 @@ pub fn compute_allocations(
         })
         .collect();
 
-    // per_barca_actual
-    let per_barca_actual: Vec<_> = barca_values
+    // per_barca_actual — every barca that has either an actual value or a
+    // target (not just ones with a priced asset), so a barca a manager just
+    // added a target for (e.g. via the BARCA Targets tab) but hasn't bought
+    // into yet still shows up here at 0%, letting them compare target vs.
+    // actual at a glance instead of the barca silently disappearing from
+    // the table/pie until it holds something.
+    let barca_names_with_value_or_target: std::collections::HashSet<&String> =
+        barca_values.keys().chain(barca_targets.keys()).collect();
+    let per_barca_actual: Vec<_> = barca_names_with_value_or_target
         .iter()
-        .map(|(barca, value)| {
+        .map(|barca| {
+            let value = barca_values.get(*barca).copied().unwrap_or(0.0);
             let current_percent = if total_wallet_value > 0.0 {
-                (*value / total_wallet_value) * 100.0
+                (value / total_wallet_value) * 100.0
             } else {
                 0.0
             };
@@ -166,8 +174,8 @@ mod tests {
     use super::*;
     use crate::domain::models::WalletAllocation;
 
-    fn make_crypto(symbol: &str, price: f64) -> Crypto {
-        Crypto {
+    fn make_quote(symbol: &str, price: f64) -> MarketQuote {
+        MarketQuote {
             symbol: symbol.to_string(),
             price,
             market_cap: 0.0,
@@ -194,6 +202,7 @@ mod tests {
             current_quantity: Some(qty),
             last_price: None,
             notes: None,
+            asset_class: "crypto".to_string(),
             created_at: None,
         }
     }
@@ -204,11 +213,11 @@ mod tests {
             make_alloc("BTC", "Core", "A", 50.0, 1.0),
             make_alloc("ETH", "Core", "A", 50.0, 2.0),
         ];
-        let cryptos = vec![make_crypto("BTC", 10.0), make_crypto("ETH", 5.0)];
+        let quotes = vec![make_quote("BTC", 10.0), make_quote("ETH", 5.0)];
         let mut barca_targets = HashMap::new();
         barca_targets.insert("A".to_string(), 100.0);
 
-        let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+        let result = compute_allocations(&allocations, &quotes, &barca_targets);
         let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
         assert_eq!(per_asset.len(), 2);
 
@@ -220,15 +229,39 @@ mod tests {
     }
 
     #[test]
+    fn per_barca_actual_includes_a_targeted_barca_with_zero_current_value() {
+        // A manager can add a barca target (e.g. via the BARCA Targets tab)
+        // before holding anything in it yet — it must still show up in the
+        // actual-side table/pie at 0%, not vanish until priced holdings
+        // exist, so target vs. actual stays comparable at a glance.
+        let allocations = vec![make_alloc("BTC", "Core", "Base", 50.0, 1.0)];
+        let quotes = vec![make_quote("BTC", 10.0)];
+        let mut barca_targets = HashMap::new();
+        barca_targets.insert("Base".to_string(), 50.0);
+        barca_targets.insert("Renda Variavel".to_string(), 50.0);
+
+        let result = compute_allocations(&allocations, &quotes, &barca_targets);
+        let per_barca_actual = result.get("per_barca_actual").unwrap().as_array().unwrap();
+
+        assert_eq!(per_barca_actual.len(), 2);
+        let renda_variavel = per_barca_actual
+            .iter()
+            .find(|b| b["barca"] == "Renda Variavel")
+            .unwrap();
+        assert_eq!(renda_variavel["value"].as_f64().unwrap(), 0.0);
+        assert_eq!(renda_variavel["current_percent"].as_f64().unwrap(), 0.0);
+    }
+
+    #[test]
     fn unknown_symbol_is_dropped_silently_not_priced_as_zero() {
         // A wallet row with no matching price feed entry must not show up as
         // a $0 holding — that would misrepresent the portfolio rather than
         // just omitting data we don't have yet.
         let allocations = vec![make_alloc("UNKNOWN", "Core", "A", 100.0, 1.0)];
-        let cryptos = vec![make_crypto("BTC", 10.0)];
+        let quotes = vec![make_quote("BTC", 10.0)];
         let barca_targets = HashMap::new();
 
-        let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+        let result = compute_allocations(&allocations, &quotes, &barca_targets);
         let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
         assert_eq!(per_asset.len(), 0);
     }
@@ -236,10 +269,10 @@ mod tests {
     #[test]
     fn empty_input_returns_empty_tables_not_an_error() {
         let allocations: Vec<WalletAllocation> = vec![];
-        let cryptos: Vec<Crypto> = vec![];
+        let quotes: Vec<MarketQuote> = vec![];
         let barca_targets = HashMap::new();
 
-        let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+        let result = compute_allocations(&allocations, &quotes, &barca_targets);
         assert!(
             result
                 .get("per_asset")
@@ -271,11 +304,11 @@ mod tests {
         // Every allocation has a zero quantity, so total wallet value is 0.
         // Percentages must come back as 0.0, not NaN/inf.
         let allocations = vec![make_alloc("BTC", "Core", "A", 100.0, 0.0)];
-        let cryptos = vec![make_crypto("BTC", 10.0)];
+        let quotes = vec![make_quote("BTC", 10.0)];
         let mut barca_targets = HashMap::new();
         barca_targets.insert("A".to_string(), 100.0);
 
-        let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+        let result = compute_allocations(&allocations, &quotes, &barca_targets);
         let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
         let current_percent = per_asset[0]
             .get("current_percent")
@@ -294,11 +327,11 @@ mod tests {
             make_alloc("BTC", "Core", "A", 30.0, 1.0),
             make_alloc("BTC", "Core", "A", 20.0, 0.5),
         ];
-        let cryptos = vec![make_crypto("BTC", 10.0)];
+        let quotes = vec![make_quote("BTC", 10.0)];
         let mut barca_targets = HashMap::new();
         barca_targets.insert("A".to_string(), 100.0);
 
-        let result = compute_allocations(&allocations, &cryptos, &barca_targets);
+        let result = compute_allocations(&allocations, &quotes, &barca_targets);
         let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
         assert_eq!(per_asset.len(), 1);
         assert_eq!(

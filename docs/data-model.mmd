@@ -119,6 +119,24 @@ erDiagram
         float deviation_percent
     }
 
+    USERS {
+        int id PK
+        string username "UNIQUE"
+        string password_hash "argon2id, never plaintext"
+        string role "CHECK IN (admin, manager, user)"
+        string created_at
+        string updated_at
+    }
+
+    REFRESH_TOKENS {
+        int id PK
+        int user_id FK
+        string token_hash "SHA-256 of the opaque token — the raw value is never stored"
+        string expires_at
+        string revoked_at "nullable — set on logout"
+        string created_at
+    }
+
     WALLET_ALLOCATIONS }o..|| WALLET_ALLOCATIONS_CURRENT : "aggregated (latest per group)"
     CRYPTO }o..|| WALLET_ALLOCATIONS_CURRENT : "priced by symbol at request time"
     WALLET_ALLOCATIONS_CURRENT ||..o{ ALLOCATIONS : "computed result persisted as JSON audit"
@@ -128,3 +146,4 @@ erDiagram
     HISTORY_ASSETS ||..|| ASSET_VARIANCE_HISTORY : "view adds deviation vs. totals"
     HISTORY_GROUPS ||..|| GROUP_VARIANCE_HISTORY : "view adds deviation_percent"
     HISTORY_BARCA ||..|| BARCA_VARIANCE_HISTORY : "view adds deviation_percent"
+    USERS ||..o{ REFRESH_TOKENS : "one session per successful login"
