@@ -102,6 +102,10 @@ export function PortfolioTargetsTab({ active }) {
   };
 
   const addRow = () => setRows((prev) => [...prev, blankRow()]);
+  const removeRow = (index) => {
+    setRows((prev) => prev.filter((_, i) => i !== index));
+    setSaveSuccess(false);
+  };
 
   const handleSave = async () => {
     if (!isValid) return;
@@ -138,8 +142,9 @@ export function PortfolioTargetsTab({ active }) {
       <Typography variant="body2" sx={{ color: "text.secondary", mb: 2, maxWidth: 640 }}>
         Every row's target % here — across the whole portfolio, every asset class together — must sum to
         100%. Quantity and notes are managed by CSV import / "Update Prices" and shown read-only; a brand
-        new asset (added below) can have a starting quantity. Removing a row does not delete its history;
-        set its target to 0 instead.
+        new asset (added below) can have a starting quantity. Remove takes the row's target out of the
+        portfolio (its quantity history in the ledger isn't deleted — this only affects the target, not
+        past records) and drops it from the 100% sum until Save.
       </Typography>
 
       {error && (
@@ -159,6 +164,7 @@ export function PortfolioTargetsTab({ active }) {
               <TableCell align="right">Target %</TableCell>
               <TableCell align="right">Quantity</TableCell>
               <TableCell>Notes</TableCell>
+              <TableCell align="right">Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -236,11 +242,16 @@ export function PortfolioTargetsTab({ active }) {
                     sx={{ width: 140 }}
                   />
                 </TableCell>
+                <TableCell align="right">
+                  <Button size="small" color="error" onClick={() => removeRow(i)}>
+                    Remove
+                  </Button>
+                </TableCell>
               </TableRow>
             ))}
             {!loading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} align="center" sx={{ color: "text.secondary" }}>
+                <TableCell colSpan={8} align="center" sx={{ color: "text.secondary" }}>
                   No portfolio targets yet.
                 </TableCell>
               </TableRow>
