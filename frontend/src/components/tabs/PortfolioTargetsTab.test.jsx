@@ -85,6 +85,29 @@ describe("PortfolioTargetsTab", () => {
     expect(quantityInput).toBeDisabled();
   });
 
+  it("removing a row drops it from the table, the sum, and the saved payload", async () => {
+    const user = userEvent.setup();
+    const hook = setupHook();
+    render(<PortfolioTargetsTab active />);
+
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    await user.click(within(btcRow).getByRole("button", { name: "Remove" }));
+
+    expect(screen.queryByDisplayValue("BTC")).not.toBeInTheDocument();
+    expect(screen.getByText("Sum: 40.00%")).toBeInTheDocument(); // only ETH's 40 left
+    expect(screen.getByRole("button", { name: "Save All" })).toBeDisabled(); // no longer sums to 100
+
+    // Re-add ETH's missing 60% some other way isn't the point here — just
+    // confirm a save reflects the removal (single remaining row at 100%).
+    const ethRow = screen.getByDisplayValue("ETH").closest("tr");
+    const ethTarget = within(ethRow).getAllByRole("spinbutton")[0];
+    await user.clear(ethTarget);
+    await user.type(ethTarget, "100");
+    await user.click(screen.getByRole("button", { name: "Save All" }));
+
+    expect(hook.save).toHaveBeenCalledWith([expect.objectContaining({ symbol: "ETH", target_percent: 100 })]);
+  });
+
   it("adding a new row requires a symbol before Save is enabled", async () => {
     const user = userEvent.setup();
     setupHook();
