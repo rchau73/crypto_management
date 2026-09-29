@@ -1,7 +1,9 @@
-//! Adapter for brapi.dev's `/api/quote/{tickers}` endpoint — Brazilian B3
-//! stocks and FIIs (e.g. HGRU11, XPML11). Unlike CoinMarketCap's "listings"
-//! endpoint, brapi has no "give me everything" mode: the caller must name
-//! every ticker it wants priced, comma-separated, in one request.
+//! Adapter for brapi.dev's `/api/quote/{ticker}` endpoint — Brazilian B3
+//! stocks and FIIs (e.g. HGRU11, XPML11). brapi supports batching several
+//! comma-separated tickers into one request on paid plans, but the free
+//! plan caps that at 1 ticker per request (a 2nd symbol gets a 400
+//! QUOTES_PER_REQUEST_EXCEEDED) — so, like Finnhub, this issues one request
+//! per symbol rather than assuming a batch-capable plan.
 
 use crate::domain::market_data::{EquityProvider, MarketDataResult};
 use crate::domain::models::MarketQuote;
@@ -65,19 +67,17 @@ impl Default for BrapiProvider {
     }
 }
 
-#[async_trait]
-impl EquityProvider for BrapiProvider {
-    async fn fetch_quotes(
+impl BrapiProvider {
+    /// One symbol, one request — see the module doc comment for why. Returns
+    /// `Ok(None)` (not an error) for a symbol brapi didn't return a quote
+    /// for, mirroring `FinnhubQuote::into_market_quote`'s "zero price isn't
+    /// an error" handling.
+    async fn fetch_one(
         &self,
         api_key: &str,
-        symbols: &[String],
-    ) -> MarketDataResult<Vec<MarketQuote>> {
-        if symbols.is_empty() {
-            return Ok(vec![]);
-        }
-        let tickers = symbols.join(",");
-        let url = format!("{QUOTE_URL}/{tickers}");
-
+        symbol: &str,
+    ) -> MarketDataResult<Option<MarketQuote>> {
+        let url = format!("{QUOTE_URL}/{symbol}");
         let response = self
             .client
             .get(&url)
@@ -85,8 +85,45 @@ impl EquityProvider for BrapiProvider {
             .send()
             .await?;
 
-        let parsed: BrapiResponse = response.json().await?;
-        Ok(parsed.results.into_iter().map(MarketQuote::from).collect())
+        // brapi returns a JSON body on errors too (bad token, plan limits,
+        // ...), just shaped differently (no "results" array). Since
+        // `results` defaults to empty, parsing that body as `BrapiResponse`
+        // without checking the status first would silently succeed with zero
+        // quotes — the caller logs nothing, and the asset just looks
+        // untracked, with no clue why. Surface the status/body as a real
+        // error instead so it actually reaches the caller's log line.
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(format!("brapi request failed with {status}: {body}").into());
+        }
+
+        let parsed: BrapiResponse = serde_json::from_str(&body)
+            .map_err(|e| format!("Failed to parse brapi response: {e} (body: {body})"))?;
+        Ok(parsed.results.into_iter().next().map(MarketQuote::from))
+    }
+}
+
+#[async_trait]
+impl EquityProvider for BrapiProvider {
+    async fn fetch_quotes(
+        &self,
+        api_key: &str,
+        symbols: &[String],
+    ) -> MarketDataResult<Vec<MarketQuote>> {
+        let mut quotes = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            match self.fetch_one(api_key, symbol).await {
+                Ok(Some(quote)) => quotes.push(quote),
+                Ok(None) => {
+                    tracing::warn!(symbol = %symbol, "brapi returned no quote for symbol — skipping")
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, symbol = %symbol, "brapi request failed, skipping symbol")
+                }
+            }
+        }
+        Ok(quotes)
     }
 }
 
