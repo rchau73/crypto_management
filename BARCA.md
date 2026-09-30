@@ -21,7 +21,7 @@
 >   outcome, is solely the responsibility of the person who makes it. The
 >   authors accept no liability for any loss.
 
-This app exists to run one investment discipline: the **BARCA model**. This
+This app is built around one investment discipline: the **BARCA model**. This
 document explains the *business* side, meaning what the model is, why it
 works and how to act on it. [README.md](README.md) covers the technical side.
 
