@@ -9,6 +9,7 @@ export function useAllocations() {
   const [barcaAllocations, setBarcaAllocations] = useState([]);
   const [barcaActualAllocations, setBarcaActualAllocations] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [importing, setImporting] = useState(false);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
@@ -16,6 +17,7 @@ export function useAllocations() {
 
   const refresh = async () => {
     setLoading(true);
+    setLoadError("");
     try {
       const data = await fetchAllocations();
       setAllocations(data.per_asset || []);
@@ -24,9 +26,11 @@ export function useAllocations() {
       setBarcaActualAllocations(data.per_barca_actual || []);
       setLastUpdate(new Date());
     } catch (err) {
-      alert("Failed to fetch allocations: " + err.message);
+      // Shown inline by StatusLine (alert() would block the page).
+      setLoadError("Failed to fetch allocations: " + err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const importFromCsv = async (file) => {
@@ -38,12 +42,11 @@ export function useAllocations() {
       setImportStatus(`Imported ${data.imported ?? 0} wallet rows from CSV`);
       await refresh();
     } catch (err) {
-      // The backend tells apart "you uploaded a bad file" (400, message is
-      // already written for a human) from a real server failure — either
-      // way, show it inline instead of an alert() that blocks the page.
+      // A bad file comes back as a 400 whose message is written for a human.
       setImportError(err.message);
+    } finally {
+      setImporting(false);
     }
-    setImporting(false);
   };
 
   return {
@@ -52,6 +55,7 @@ export function useAllocations() {
     barcaAllocations,
     barcaActualAllocations,
     loading,
+    loadError,
     importing,
     importStatus,
     importError,

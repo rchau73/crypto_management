@@ -27,9 +27,9 @@ const SUM_TOLERANCE = 0.01;
 // Manager+/Admin only: editable table + single Save button for BARCA
 // targets, scoped to one market profile at a time. A barca with no crypto
 // Bull/Bear cycle (e.g. "IBOVE") just gets added to both profiles.
-export function BarcaTargetsTab({ active }) {
+export function BarcaTargetsTab() {
   const [market, setMarket] = useState("BullMarket");
-  const { targets, loading, error, save } = useBarcaTargets(active, market);
+  const { targets, loading, error, save } = useBarcaTargets(market);
   const [rows, setRows] = useState([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");

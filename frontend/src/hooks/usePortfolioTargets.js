@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchPortfolioTargets, savePortfolioTargets } from "../api/client";
 
-// Manager+ editable-table data for the portfolio-targets admin tab.
-// `active` should be false while that tab isn't visible, matching the
-// pattern used for the Admin tab's user list.
-export function usePortfolioTargets(active) {
+// Manager+ editable-table data for the Portfolio Targets tab. Fetches when
+// the tab mounts.
+export function usePortfolioTargets() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -16,13 +15,14 @@ export function usePortfolioTargets(active) {
       setRows(await fetchPortfolioTargets());
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (active) refresh();
-  }, [active, refresh]);
+    refresh();
+  }, [refresh]);
 
   const save = useCallback(
     async (nextRows) => {

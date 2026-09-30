@@ -28,8 +28,8 @@ describe("BarcaTargetsTab", () => {
 
   it("lists existing targets for the default market", () => {
     setupHook();
-    render(<BarcaTargetsTab active />);
-    expect(useBarcaTargets).toHaveBeenCalledWith(true, "BullMarket");
+    render(<BarcaTargetsTab />);
+    expect(useBarcaTargets).toHaveBeenCalledWith("BullMarket");
     expect(screen.getByDisplayValue("Base")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Altcoins")).toBeInTheDocument();
   });
@@ -37,17 +37,17 @@ describe("BarcaTargetsTab", () => {
   it("re-queries the hook with the newly selected market", async () => {
     const user = userEvent.setup();
     setupHook();
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
 
     await user.click(screen.getByRole("combobox"));
     await user.click(screen.getByRole("option", { name: "BearMarket" }));
 
-    expect(useBarcaTargets).toHaveBeenLastCalledWith(true, "BearMarket");
+    expect(useBarcaTargets).toHaveBeenLastCalledWith("BearMarket");
   });
 
   it("shows a valid 100% sum and enables Save", () => {
     setupHook();
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
     expect(screen.getByText("Sum: 100.00%")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save All" })).toBeEnabled();
   });
@@ -55,7 +55,7 @@ describe("BarcaTargetsTab", () => {
   it("disables Save when the sum is not 100%", async () => {
     const user = userEvent.setup();
     setupHook();
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
 
     const baseRow = screen.getByDisplayValue("Base").closest("tr");
     const targetInput = within(baseRow).getByRole("spinbutton");
@@ -69,7 +69,7 @@ describe("BarcaTargetsTab", () => {
   it("saves the edited, trimmed set of targets", async () => {
     const user = userEvent.setup();
     const hook = setupHook();
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
 
     await user.click(screen.getByRole("button", { name: "Save All" }));
 
@@ -82,7 +82,7 @@ describe("BarcaTargetsTab", () => {
   it("adding a new row starts at 0% and breaks the sum until edited", async () => {
     const user = userEvent.setup();
     setupHook();
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
 
     await user.click(screen.getByRole("button", { name: "+ Add BARCA" }));
     expect(screen.getByText("Sum: 100.00%")).toBeInTheDocument(); // new row is 0%, sum unchanged
@@ -97,7 +97,7 @@ describe("BarcaTargetsTab", () => {
   it("removing a row updates the sum", async () => {
     const user = userEvent.setup();
     setupHook();
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
 
     const baseRow = screen.getByDisplayValue("Base").closest("tr");
     await user.click(within(baseRow).getByRole("button", { name: "Remove" }));
@@ -107,13 +107,13 @@ describe("BarcaTargetsTab", () => {
 
   it("surfaces a fetch error from the hook", () => {
     setupHook({ error: "network down" });
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
     expect(screen.getByText("network down")).toBeInTheDocument();
   });
 
   it("shows an empty-state row when there are no targets for this market", () => {
     setupHook({ targets: [] });
-    render(<BarcaTargetsTab active />);
+    render(<BarcaTargetsTab />);
     expect(screen.getByText("No BARCA targets for BullMarket yet.")).toBeInTheDocument();
   });
 });

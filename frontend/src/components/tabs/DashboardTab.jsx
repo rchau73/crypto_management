@@ -4,9 +4,9 @@ import { HistoryLineChart } from "../HistoryLineChart";
 import { useHistoryDashboard } from "../../hooks/useHistoryDashboard";
 import "../../styles/debugPanel.css";
 
-// Tab 4: historical dashboard. Fetches only while this tab is active.
-export function DashboardTab({ active }) {
-  const dashboard = useHistoryDashboard(active);
+// Historical dashboard. Fetches when the tab mounts.
+export function DashboardTab() {
+  const dashboard = useHistoryDashboard();
 
   return (
     <Box>
@@ -21,7 +21,7 @@ export function DashboardTab({ active }) {
         series={dashboard.series}
         selectedSeries={dashboard.selectedSeries}
         onSelectedSeriesChange={dashboard.setSelectedSeries}
-        onRefresh={() => dashboard.refresh(dashboard.level)}
+        onRefresh={dashboard.refresh}
       />
       <Box sx={{ height: 400 }}>
         {dashboard.data.length === 0 ? (

@@ -13,21 +13,16 @@ describe("useBarcaTargets", () => {
     vi.resetAllMocks();
   });
 
-  it("does not fetch while inactive", () => {
-    renderHook(() => useBarcaTargets(false, "BullMarket"));
-    expect(api.fetchBarcaTargets).not.toHaveBeenCalled();
-  });
-
-  it("fetches targets for the given market once active", async () => {
+  it("fetches targets for the given market on mount", async () => {
     api.fetchBarcaTargets.mockResolvedValue([{ barca: "Base", target_percent: 100 }]);
-    const { result } = renderHook(() => useBarcaTargets(true, "BullMarket"));
+    const { result } = renderHook(() => useBarcaTargets("BullMarket"));
     await waitFor(() => expect(result.current.targets).toHaveLength(1));
     expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BullMarket");
   });
 
   it("re-fetches with the new market when the market prop changes", async () => {
     api.fetchBarcaTargets.mockResolvedValue([]);
-    const { rerender } = renderHook(({ market }) => useBarcaTargets(true, market), {
+    const { rerender } = renderHook(({ market }) => useBarcaTargets(market), {
       initialProps: { market: "BullMarket" },
     });
     await waitFor(() => expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BullMarket"));
@@ -38,7 +33,7 @@ describe("useBarcaTargets", () => {
 
   it("surfaces a fetch failure as an error message, not a thrown exception", async () => {
     api.fetchBarcaTargets.mockRejectedValue(new Error("network down"));
-    const { result } = renderHook(() => useBarcaTargets(true, "BullMarket"));
+    const { result } = renderHook(() => useBarcaTargets("BullMarket"));
     await waitFor(() => expect(result.current.error).toBe("network down"));
     expect(result.current.targets).toEqual([]);
   });
@@ -49,7 +44,7 @@ describe("useBarcaTargets", () => {
       .mockResolvedValueOnce([{ barca: "Base", target_percent: 100 }]);
     api.saveBarcaTargets.mockResolvedValue({ ok: true });
 
-    const { result } = renderHook(() => useBarcaTargets(true, "BullMarket"));
+    const { result } = renderHook(() => useBarcaTargets("BullMarket"));
     await waitFor(() => expect(api.fetchBarcaTargets).toHaveBeenCalledTimes(1));
 
     const targets = [{ barca: "Base", target_percent: 100 }];
