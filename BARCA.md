@@ -4,6 +4,11 @@ This app exists to run one investment discipline: the **BARCA model**. This
 document explains the *business* side, meaning what the model is, why it
 works and how to act on it. [README.md](README.md) covers the technical side.
 
+> **BARCA is a long-term investor strategy.** It is not meant for day trading
+> or even swing trading. Those could be built on the same ideas, but they
+> would be hard to maintain when holdings are spread across many sources
+> (wallets, exchanges, brokers), as they are here.
+
 > This describes the portfolio owner's own strategy, as the app implements
 > it. It is not financial advice.
 
@@ -11,16 +16,23 @@ works and how to act on it. [README.md](README.md) covers the technical side.
 
 ## 1. What BARCA is
 
-The wallet is split into a few large **buckets**, called **BARCAs**. Each
-BARCA has a **target percentage** of the total wallet value, and the targets
-add up to 100%.
+**BARCA** names the five pillars of the strategy. Four of them are
+**buckets** of the wallet, each with a **target percentage** of the total
+value (the targets add up to 100%). The fifth is a discipline.
 
-| BARCA | What it holds | Role in the wallet | Target (BullMarket) |
+| Letter | Stands for | In this wallet (BARCA name in the app) | Role |
 |---|---|---|---|
-| **Base** | BTC | The long-term core position. | 50% |
-| **Caixa** | USDT (cash / stablecoin) | Dry powder: money waiting for an opportunity, and the place profits go when taken. | 30% |
-| **Altcoins** | Other crypto assets (Holding + DeFi) | Higher-risk, higher-upside satellite. | 10% |
-| **RendaPassiva** | FIIs (Brazilian real-estate funds) | Passive income, uncorrelated with crypto. | 10% |
+| **B** | **Base**: core investment | `Base`: BTC | The long-term core position the whole wallet is built around. |
+| **A** | **Alternative** | `Altcoins`: other crypto assets (Holding + DeFi) | Higher-risk, higher-upside satellite. In crypto this means altcoins; in a regular stock market it could be small caps. |
+| **R** | **Recurrent income** (revenue) | `RendaPassiva`: FIIs (Brazilian real-estate funds) | Income the portfolio pays out on a regular basis. It is the key to a withdrawal strategy, for retirement or for anyone living off the portfolio: you spend the income, not the principal, so the portfolio keeps growing. |
+| **C** | **Cash** | `Caixa`: USDT (stablecoin) | Money available to buy when opportunities appear, and where profits go when taken. **Not** an emergency fund for personal expenses; that belongs outside this wallet. |
+| **A** | **Aprender** (Portuguese for "to learn") | *Not a wallet bucket* | Keep learning about the financial market: new strategies, backtests, anything investment-related. Knowledge is what keeps emotional reactions out of decisions. |
+
+Current targets for the four wallet buckets (`BullMarket` profile):
+
+| Base | Altcoins | RendaPassiva | Caixa |
+|---|---|---|---|
+| 50% | 10% | 10% | 30% |
 
 Each asset also has its own target (Portfolio Targets tab). An asset's target
 is its share **inside** the whole wallet, so the asset targets of one BARCA
@@ -54,6 +66,9 @@ The model decides *when* and *how much*, so emotions don't.
 - **Never all-in, never all-out.** Every action moves the wallet a *step*
   toward its targets. There is always some Caixa to buy with, and always some
   Base that keeps compounding.
+- **Knowledge beats reflexes.** The last A, *Aprender*, is part of the
+  model on purpose: the better you understand the market, the easier it is
+  to follow the rules when they feel uncomfortable.
 - **Rebalancing works mechanically.** Selling what went up (above target) and
   buying what went down (below target) is "buy low, sell high", enforced by
   arithmetic. Over the long term, a disciplined balanced wallet tends to beat
