@@ -162,6 +162,48 @@ impl TargetsService {
         Ok(())
     }
 
+    /// Corrects the current quantity of one already-tracked, single-source
+    /// asset by appending a new ledger row for the exact same `(symbol,
+    /// group, barca, asset_class, notes)` key. `wallet_allocations_current`
+    /// only sums the latest row per source partition (see its `per_source`
+    /// CTE), so this new row simply supersedes the old quantity for that
+    /// one source — every other source contributing to the same displayed
+    /// row (a different `notes` value) is untouched.
+    ///
+    /// Deliberately narrow and separate from `save_portfolio_targets`:
+    /// this never touches `target_percent`, never validates a 100% sum,
+    /// and never seeds anything — one small, auditable write, kept out of
+    /// that already-complex method on purpose.
+    pub async fn correct_wallet_quantity(
+        &self,
+        symbol: &str,
+        group_name: Option<&str>,
+        barca: Option<&str>,
+        asset_class: &str,
+        notes: Option<&str>,
+        new_quantity: f64,
+    ) -> Result<(), TargetsServiceError> {
+        if AssetClass::parse(asset_class).is_none() {
+            return Err(TargetsServiceError::InvalidAssetClass(
+                asset_class.to_string(),
+            ));
+        }
+        let row = WalletAllocation {
+            id: None,
+            symbol: symbol.to_string(),
+            group_name: group_name.map(str::to_string),
+            barca: barca.map(str::to_string),
+            target_percent: None,
+            current_quantity: Some(new_quantity),
+            last_price: None,
+            notes: notes.map(str::to_string),
+            asset_class: asset_class.to_string(),
+            created_at: None,
+        };
+        self.repo.insert_wallet_allocation(&row).await?;
+        Ok(())
+    }
+
     /// Replaces every barca target for one market profile in one atomic
     /// transaction (a barca left out is deleted). Every target for that
     /// market must sum to 100% — see migrations/0006 for why there's no
@@ -477,5 +519,123 @@ mod tests {
             2,
             "the first save's set must be replaced, not merged"
         );
+    }
+
+    #[tokio::test]
+    async fn correct_wallet_quantity_replaces_the_source_instead_of_doubling_it() {
+        let service = in_memory_service().await;
+        service
+            .repo
+            .insert_wallet_allocation(&WalletAllocation {
+                id: None,
+                symbol: "HGRU11".to_string(),
+                group_name: Some("FII".to_string()),
+                barca: Some("RendaPassiva".to_string()),
+                target_percent: None,
+                current_quantity: Some(10.0),
+                last_price: None,
+                notes: Some("XP".to_string()),
+                asset_class: "br-equities".to_string(),
+                created_at: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .correct_wallet_quantity(
+                "HGRU11",
+                Some("FII"),
+                Some("RendaPassiva"),
+                "br-equities",
+                Some("XP"),
+                67.0,
+            )
+            .await
+            .unwrap();
+
+        let current = service
+            .repo
+            .fetch_current_wallet_allocations()
+            .await
+            .unwrap();
+        let hgru11 = current.iter().find(|r| r.symbol == "HGRU11").unwrap();
+        assert_eq!(
+            hgru11.current_quantity,
+            Some(67.0),
+            "the corrected quantity must replace the old one, not add to it"
+        );
+    }
+
+    #[tokio::test]
+    async fn correct_wallet_quantity_only_touches_the_named_source() {
+        let service = in_memory_service().await;
+        // Same asset, two different sources (distinct `notes`) — a real
+        // multi-wallet holding, e.g. BTC on both Binance and a Ledger.
+        service
+            .repo
+            .insert_wallet_allocation(&WalletAllocation {
+                id: None,
+                symbol: "BTC".to_string(),
+                group_name: Some("Holding".to_string()),
+                barca: Some("Base".to_string()),
+                target_percent: None,
+                current_quantity: Some(1.0),
+                last_price: None,
+                notes: Some("Binance".to_string()),
+                asset_class: "crypto".to_string(),
+                created_at: None,
+            })
+            .await
+            .unwrap();
+        service
+            .repo
+            .insert_wallet_allocation(&WalletAllocation {
+                id: None,
+                symbol: "BTC".to_string(),
+                group_name: Some("Holding".to_string()),
+                barca: Some("Base".to_string()),
+                target_percent: None,
+                current_quantity: Some(2.0),
+                last_price: None,
+                notes: Some("Ledger Wallet".to_string()),
+                asset_class: "crypto".to_string(),
+                created_at: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .correct_wallet_quantity(
+                "BTC",
+                Some("Holding"),
+                Some("Base"),
+                "crypto",
+                Some("Binance"),
+                5.0,
+            )
+            .await
+            .unwrap();
+
+        let current = service
+            .repo
+            .fetch_current_wallet_allocations()
+            .await
+            .unwrap();
+        let btc = current.iter().find(|r| r.symbol == "BTC").unwrap();
+        assert_eq!(
+            btc.current_quantity,
+            Some(7.0),
+            "Binance's corrected 5.0 plus Ledger Wallet's untouched 2.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn correct_wallet_quantity_rejects_an_unknown_asset_class() {
+        let service = in_memory_service().await;
+        let err = service
+            .correct_wallet_quantity("HGRU11", None, None, "not-a-real-class", None, 10.0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TargetsServiceError::InvalidAssetClass(_)));
     }
 }

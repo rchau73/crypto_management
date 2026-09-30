@@ -12,7 +12,8 @@ use crate::domain::repository::{
 use crate::infra::coinmarketcap::MockCryptoProvider;
 use crate::usecases::auth_service::hash_password;
 use crate::{
-    AppState, api_allocations, api_history, import_wallets_handler, import_wallets_upload_handler,
+    AppState, api_allocations, api_history, correct_wallet_quantity_handler,
+    get_portfolio_targets_handler, import_wallets_handler, import_wallets_upload_handler,
 };
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -148,6 +149,11 @@ async fn build_test_app() -> (Router, String) {
         .route(
             "/api/import_wallets/upload",
             axum::routing::post(import_wallets_upload_handler),
+        )
+        .route("/api/portfolio/targets", get(get_portfolio_targets_handler))
+        .route(
+            "/api/portfolio/targets/quantity",
+            axum::routing::put(correct_wallet_quantity_handler),
         )
         .route("/api/auth/login", axum::routing::post(login_handler))
         .route("/api/auth/logout", axum::routing::post(logout_handler))
@@ -443,4 +449,65 @@ async fn csv_upload_with_a_missing_required_column_is_rejected_as_a_client_error
 
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+}
+
+fn correct_quantity_body(notes: &str, new_quantity: f64) -> Body {
+    Body::from(format!(
+        r#"{{"symbol":"BTC","group_name":"Base","barca":"Base","asset_class":"crypto","notes":"{notes}","current_quantity":{new_quantity}}}"#
+    ))
+}
+
+#[tokio::test]
+async fn correct_wallet_quantity_is_rejected_for_the_viewer_role() {
+    let (app, password) = build_test_app().await;
+    let cookie = login_as(&app, "viewer", &password).await;
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/portfolio/targets/quantity")
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/json")
+        .body(correct_quantity_body("Ledger", 3.0))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn correct_wallet_quantity_updates_only_the_named_source_for_a_manager() {
+    let (app, password) = build_test_app().await;
+    let cookie = login(&app, &password).await;
+
+    // build_test_app seeds BTC from two sources: "Ledger" (1.0) and
+    // "Binance" (0.5). Correcting only "Ledger" to 3.0 must leave
+    // "Binance" untouched, landing on 3.0 + 0.5, never 1.0 + 0.5 + 3.0.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/portfolio/targets/quantity")
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/json")
+        .body(correct_quantity_body("Ledger", 3.0))
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert!(
+        res.status().is_success(),
+        "correction should succeed for a manager"
+    );
+
+    let get_req = Request::builder()
+        .uri("/api/portfolio/targets")
+        .header(COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let get_res = app.oneshot(get_req).await.unwrap();
+    let rows = body_json(get_res).await;
+    let btc = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["symbol"] == "BTC")
+        .unwrap();
+    assert_eq!(btc["current_quantity"], 3.5);
 }

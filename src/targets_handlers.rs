@@ -86,6 +86,54 @@ pub async fn save_portfolio_targets_handler(
 }
 
 #[derive(Deserialize)]
+pub struct CorrectWalletQuantityPayload {
+    symbol: String,
+    group_name: Option<String>,
+    barca: Option<String>,
+    asset_class: String,
+    notes: Option<String>,
+    current_quantity: f64,
+}
+
+/// Corrects a single-source asset's quantity — see
+/// `TargetsService::correct_wallet_quantity` for why this is a separate,
+/// narrow endpoint rather than another case inside
+/// `save_portfolio_targets_handler`.
+#[tracing::instrument(skip(state, payload))]
+pub async fn correct_wallet_quantity_handler(
+    current: CurrentUser,
+    State(state): State<AppState>,
+    Json(payload): Json<CorrectWalletQuantityPayload>,
+) -> Result<Json<Value>, ApiError> {
+    require_role(&current, Role::Manager)?;
+    match targets_service(&state)
+        .correct_wallet_quantity(
+            &payload.symbol,
+            payload.group_name.as_deref(),
+            payload.barca.as_deref(),
+            &payload.asset_class,
+            payload.notes.as_deref(),
+            payload.current_quantity,
+        )
+        .await
+    {
+        Ok(()) => {
+            info!(
+                symbol = %payload.symbol,
+                new_quantity = payload.current_quantity,
+                by_user_id = current.user_id,
+                "Corrected wallet allocation quantity"
+            );
+            Ok(Json(json!({ "ok": true })))
+        }
+        Err(e) => {
+            warn!(error = %e, symbol = %payload.symbol, by_user_id = current.user_id, "Rejected wallet quantity correction");
+            Err(targets_service_error_response(e))
+        }
+    }
+}
+
+#[derive(Deserialize)]
 pub struct BarcaTargetsQuery {
     market: String,
 }

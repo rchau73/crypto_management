@@ -17,13 +17,23 @@ import {
   Typography,
 } from "@mui/material";
 import { usePortfolioTargets } from "../../hooks/usePortfolioTargets";
-import { fetchBarcaTargets } from "../../api/client";
+import { correctWalletQuantity, fetchBarcaTargets } from "../../api/client";
 import { zebraRowSx } from "../../styles/tableStyles";
 import { getTotalTargetPercent } from "../../utils/allocationMath";
 import { STATUS_COLORS } from "../../theme";
 
 const ASSET_CLASSES = ["crypto", "br-equities", "us-indices"];
 const SUM_TOLERANCE = 0.01;
+
+// `wallet_allocations_current` joins every distinct `notes` value for a
+// (symbol, group, barca, asset_class) key with " | " (see migrations/0008's
+// view definition). A single-notes (or notes-less) row maps 1:1 to one
+// ledger source, so correcting it is unambiguous; a row with " | " in its
+// notes is an aggregate of several sources and isn't safe to correct from
+// here (see PortfolioTargetsTab's doc comment).
+function isSingleSource(row) {
+  return !row.notes || !row.notes.includes(" | ");
+}
 
 function blankRow() {
   return {
@@ -55,6 +65,13 @@ function blankRow() {
 // ADD its quantity on top of the originals instead of replacing them,
 // silently doubling holdings. Only a genuinely new row (added below) has no
 // prior entries to conflict with, so its quantity/notes are safe to set.
+//
+// A single-source existing row (see `isSingleSource`) gets a "Corrigir"
+// control instead: it calls a separate, narrow endpoint
+// (`correctWalletQuantity`) that appends one new ledger row for that exact
+// source, immediately — not part of the Save All batch above. A
+// multi-source row doesn't get this control, since there'd be no way to
+// tell which of its concatenated sources to fix.
 export function PortfolioTargetsTab({ active }) {
   const { rows: currentRows, loading, error, save } = usePortfolioTargets(active);
   const [rows, setRows] = useState([]);
@@ -62,6 +79,10 @@ export function PortfolioTargetsTab({ active }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [correctingRow, setCorrectingRow] = useState(null);
+  const [correctionValue, setCorrectionValue] = useState("");
+  const [correctionSaving, setCorrectionSaving] = useState(false);
+  const [correctionError, setCorrectionError] = useState("");
 
   useEffect(() => {
     setRows(currentRows.map((r) => ({ ...r, isNew: false })));
@@ -107,6 +128,44 @@ export function PortfolioTargetsTab({ active }) {
     setSaveSuccess(false);
   };
 
+  const startCorrection = (index) => {
+    setCorrectingRow(index);
+    setCorrectionValue(String(rows[index].current_quantity ?? 0));
+    setCorrectionError("");
+  };
+  const cancelCorrection = () => {
+    setCorrectingRow(null);
+    setCorrectionError("");
+  };
+  const submitCorrection = async (index) => {
+    const r = rows[index];
+    const newQuantity = Number(correctionValue) || 0;
+    setCorrectionSaving(true);
+    setCorrectionError("");
+    try {
+      await correctWalletQuantity({
+        symbol: r.symbol,
+        group_name: r.group_name || null,
+        barca: r.barca || null,
+        asset_class: r.asset_class,
+        notes: r.notes || null,
+        current_quantity: newQuantity,
+      });
+      setCorrectingRow(null);
+      // Update only this row's quantity in place — refetching the whole
+      // table here (via the hook's `refresh`) would overwrite every other
+      // row with its last-saved server state, silently discarding any
+      // Target %/Group/BARCA edit the user made elsewhere in the table
+      // that hasn't been submitted via Save All yet.
+      setRows((prev) =>
+        prev.map((row, i) => (i === index ? { ...row, current_quantity: newQuantity } : row))
+      );
+    } catch (err) {
+      setCorrectionError(err.message);
+    }
+    setCorrectionSaving(false);
+  };
+
   const handleSave = async () => {
     if (!isValid) return;
     setSaving(true);
@@ -142,9 +201,11 @@ export function PortfolioTargetsTab({ active }) {
       <Typography variant="body2" sx={{ color: "text.secondary", mb: 2, maxWidth: 640 }}>
         Every row's target % here — across the whole portfolio, every asset class together — must sum to
         100%. Quantity and notes are managed by CSV import / "Update Prices" and shown read-only; a brand
-        new asset (added below) can have a starting quantity. Remove takes the row's target out of the
-        portfolio (its quantity history in the ledger isn't deleted — this only affects the target, not
-        past records) and drops it from the 100% sum until Save.
+        new asset (added below) can have a starting quantity. A single-source row (one wallet/broker) can
+        have its quantity fixed via "Corrigir", applied immediately; a row that sums several sources shows
+        "multi-fonte" instead, since there'd be no way to tell which source to correct. Remove takes the
+        row's target out of the portfolio (its quantity history in the ledger isn't deleted — this only
+        affects the target, not past records) and drops it from the 100% sum until Save.
       </Typography>
 
       {error && (
@@ -221,16 +282,66 @@ export function PortfolioTargetsTab({ active }) {
                   />
                 </TableCell>
                 <TableCell align="right">
-                  <TextField
-                    size="small"
-                    type="number"
-                    value={r.current_quantity}
-                    onChange={(e) => updateRow(i, "current_quantity", e.target.value)}
-                    disabled={!r.isNew}
-                    title={!r.isNew ? "Managed by CSV import / Update Prices, not editable here" : undefined}
-                    sx={{ width: 110 }}
-                    slotProps={{ htmlInput: { step: "any" } }}
-                  />
+                  {r.isNew ? (
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={r.current_quantity}
+                      onChange={(e) => updateRow(i, "current_quantity", e.target.value)}
+                      sx={{ width: 110 }}
+                      slotProps={{ htmlInput: { step: "any" } }}
+                    />
+                  ) : correctingRow === i ? (
+                    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.5 }}>
+                      <Box sx={{ display: "flex", gap: 0.5 }}>
+                        <TextField
+                          size="small"
+                          type="number"
+                          autoFocus
+                          value={correctionValue}
+                          onChange={(e) => setCorrectionValue(e.target.value)}
+                          sx={{ width: 90 }}
+                          slotProps={{ htmlInput: { step: "any" } }}
+                        />
+                        <Button size="small" disabled={correctionSaving} onClick={() => submitCorrection(i)}>
+                          Salvar
+                        </Button>
+                        <Button size="small" disabled={correctionSaving} onClick={cancelCorrection}>
+                          Cancelar
+                        </Button>
+                      </Box>
+                      {correctionError && (
+                        <Typography variant="caption" sx={{ color: "error.main" }}>
+                          {correctionError}
+                        </Typography>
+                      )}
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, justifyContent: "flex-end" }}>
+                      <TextField
+                        size="small"
+                        type="number"
+                        value={r.current_quantity}
+                        disabled
+                        title="Managed by CSV import / Update Prices — use Corrigir to fix a wrong value"
+                        sx={{ width: 90 }}
+                        slotProps={{ htmlInput: { step: "any" } }}
+                      />
+                      {isSingleSource(r) ? (
+                        <Button size="small" onClick={() => startCorrection(i)}>
+                          Corrigir
+                        </Button>
+                      ) : (
+                        <Typography
+                          variant="caption"
+                          title="Soma mais de uma fonte (notes concatenados) — correção direta não suportada ainda"
+                          sx={{ color: "text.disabled", px: 0.5 }}
+                        >
+                          multi-fonte
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
                 </TableCell>
                 <TableCell>
                   <TextField
