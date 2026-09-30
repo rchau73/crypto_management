@@ -1,101 +1,71 @@
 //! Adapter for Finnhub's `/quote` endpoint — US equities and index ETFs
-//! (e.g. SPY, QQQ) or raw index symbols, depending on plan entitlements.
-//! Unlike brapi, Finnhub's free-tier `/quote` endpoint takes exactly one
-//! symbol per request — no batch mode — so `fetch_quotes` issues one
-//! request per symbol. A symbol that fails or comes back unsupported (price
-//! 0) is logged and skipped rather than failing the whole "Update Prices"
-//! click over one bad ticker.
+//! (e.g. SPY, QQQ). The free tier takes one symbol per request.
 
 use crate::domain::market_data::{EquityProvider, MarketDataResult};
 use crate::domain::models::MarketQuote;
+use crate::infra::http::{build_client, read_json};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 
 const QUOTE_URL: &str = "https://finnhub.io/api/v1/quote";
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize)]
 struct FinnhubQuote {
-    /// Current price. Finnhub returns 0 (not an error) for a symbol the
-    /// caller's plan/key isn't entitled to, which is why callers must
-    /// check this rather than trusting a 200 response alone.
+    /// Current price. Finnhub answers 0 (not an error) for a symbol the
+    /// key's plan can't access.
     c: f64,
-    /// Percent change on the day.
-    dp: Option<f64>,
 }
 
-impl FinnhubQuote {
-    fn into_market_quote(self, symbol: &str) -> Option<MarketQuote> {
-        if self.c <= 0.0 {
-            return None;
-        }
-        Some(MarketQuote {
-            symbol: symbol.to_string(),
-            price: self.c,
-            // Finnhub's /quote endpoint has no market-cap, FDV, volume, or
-            // 7d-change concept — leave the CMC-specific extras at 0.0,
-            // same as every non-crypto provider (nothing downstream reads
-            // them).
-            market_cap: 0.0,
-            fdv: 0.0,
-            volume_24h: 0.0,
-            percent_change_24h: self.dp.unwrap_or(0.0),
-            percent_change_7d: 0.0,
-        })
+fn to_market_quote(quote: FinnhubQuote, symbol: &str) -> Option<MarketQuote> {
+    if quote.c <= 0.0 {
+        return None;
     }
+    Some(MarketQuote {
+        symbol: symbol.to_string(),
+        price: quote.c,
+    })
 }
 
 pub struct FinnhubProvider {
     client: Client,
+    api_key: String,
 }
 
 impl FinnhubProvider {
-    pub fn new() -> Self {
+    pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: build_client(),
+            api_key,
         }
     }
-}
 
-impl Default for FinnhubProvider {
-    fn default() -> Self {
-        Self::new()
+    async fn fetch_one(&self, symbol: &str) -> MarketDataResult<Option<MarketQuote>> {
+        let response = self
+            .client
+            .get(QUOTE_URL)
+            .query(&[("symbol", symbol), ("token", self.api_key.as_str())])
+            .send()
+            .await?;
+        let parsed: FinnhubQuote = read_json(response, "Finnhub").await?;
+        Ok(to_market_quote(parsed, symbol))
     }
 }
 
 #[async_trait]
 impl EquityProvider for FinnhubProvider {
-    async fn fetch_quotes(
-        &self,
-        api_key: &str,
-        symbols: &[String],
-    ) -> MarketDataResult<Vec<MarketQuote>> {
+    async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        // Sequential on purpose: the free tier is rate-limited.
         let mut quotes = Vec::with_capacity(symbols.len());
         for symbol in symbols {
-            let response = match self
-                .client
-                .get(QUOTE_URL)
-                .query(&[("symbol", symbol.as_str()), ("token", api_key)])
-                .send()
-                .await
-            {
-                Ok(r) => r,
+            match self.fetch_one(symbol).await {
+                Ok(Some(quote)) => quotes.push(quote),
+                Ok(None) => tracing::warn!(
+                    %symbol,
+                    "Finnhub returned a zero price (symbol likely not on this plan) — skipping"
+                ),
                 Err(e) => {
-                    tracing::warn!(error = %e, symbol = %symbol, "Finnhub request failed, skipping symbol");
-                    continue;
-                }
-            };
-
-            match response.json::<FinnhubQuote>().await {
-                Ok(q) => match q.into_market_quote(symbol) {
-                    Some(quote) => quotes.push(quote),
-                    None => tracing::warn!(
-                        symbol = %symbol,
-                        "Finnhub returned a zero price (symbol likely unsupported on this plan) — skipping"
-                    ),
-                },
-                Err(e) => {
-                    tracing::warn!(error = %e, symbol = %symbol, "Failed to parse Finnhub response, skipping symbol");
+                    tracing::warn!(error = %e, %symbol, "Finnhub request failed — skipping symbol")
                 }
             }
         }
@@ -107,32 +77,19 @@ impl EquityProvider for FinnhubProvider {
 mod tests {
     use super::*;
 
-    #[test]
-    fn maps_a_quote_with_a_positive_price() {
-        let raw = r#"{"c": 261.74, "dp": 1.15}"#;
-        let parsed: FinnhubQuote = serde_json::from_str(raw).unwrap();
+    fn parse(raw: &str) -> FinnhubQuote {
+        serde_json::from_str(raw).unwrap()
+    }
 
-        let quote = parsed.into_market_quote("AAPL").unwrap();
+    #[test]
+    fn maps_a_positive_price() {
+        let quote = to_market_quote(parse(r#"{"c": 261.74, "dp": 1.15}"#), "AAPL").unwrap();
         assert_eq!(quote.symbol, "AAPL");
         assert_eq!(quote.price, 261.74);
-        assert_eq!(quote.percent_change_24h, 1.15);
-        assert_eq!(quote.market_cap, 0.0);
     }
 
     #[test]
-    fn a_zero_price_is_treated_as_unsupported_not_a_free_asset() {
-        let raw = r#"{"c": 0, "dp": 0}"#;
-        let parsed: FinnhubQuote = serde_json::from_str(raw).unwrap();
-
-        assert!(parsed.into_market_quote("UNKNOWN").is_none());
-    }
-
-    #[test]
-    fn a_missing_change_percent_defaults_to_zero_instead_of_failing_to_parse() {
-        let raw = r#"{"c": 100.0}"#;
-        let parsed: FinnhubQuote = serde_json::from_str(raw).unwrap();
-
-        let quote = parsed.into_market_quote("SPY").unwrap();
-        assert_eq!(quote.percent_change_24h, 0.0);
+    fn a_zero_price_means_unsupported_not_free() {
+        assert!(to_market_quote(parse(r#"{"c": 0}"#), "UNKNOWN").is_none());
     }
 }
