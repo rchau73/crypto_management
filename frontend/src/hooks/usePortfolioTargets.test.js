@@ -13,21 +13,16 @@ describe("usePortfolioTargets", () => {
     vi.resetAllMocks();
   });
 
-  it("does not fetch while inactive", () => {
-    renderHook(() => usePortfolioTargets(false));
-    expect(api.fetchPortfolioTargets).not.toHaveBeenCalled();
-  });
-
-  it("fetches the current rows once active", async () => {
+  it("fetches the current rows on mount", async () => {
     api.fetchPortfolioTargets.mockResolvedValue([{ symbol: "BTC", target_percent: 100 }]);
-    const { result } = renderHook(() => usePortfolioTargets(true));
+    const { result } = renderHook(() => usePortfolioTargets());
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
     expect(result.current.loading).toBe(false);
   });
 
   it("surfaces a fetch failure as an error message, not a thrown exception", async () => {
     api.fetchPortfolioTargets.mockRejectedValue(new Error("network down"));
-    const { result } = renderHook(() => usePortfolioTargets(true));
+    const { result } = renderHook(() => usePortfolioTargets());
     await waitFor(() => expect(result.current.error).toBe("network down"));
     expect(result.current.rows).toEqual([]);
   });
@@ -38,7 +33,7 @@ describe("usePortfolioTargets", () => {
       .mockResolvedValueOnce([{ symbol: "BTC", target_percent: 100 }]);
     api.savePortfolioTargets.mockResolvedValue({ ok: true });
 
-    const { result } = renderHook(() => usePortfolioTargets(true));
+    const { result } = renderHook(() => usePortfolioTargets());
     await waitFor(() => expect(api.fetchPortfolioTargets).toHaveBeenCalledTimes(1));
 
     const rows = [{ symbol: "BTC", target_percent: 100 }];

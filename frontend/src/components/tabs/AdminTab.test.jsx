@@ -31,7 +31,7 @@ describe("AdminTab", () => {
 
   it("lists existing users with their email, phone, role, and created date", () => {
     setupUseUsers();
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
     expect(screen.getAllByText("admin").length).toBeGreaterThan(0);
     expect(screen.getByText("bob@example.com")).toBeInTheDocument();
     expect(screen.getByText("+1-555-0100")).toBeInTheDocument();
@@ -39,14 +39,14 @@ describe("AdminTab", () => {
 
   it("shows a dash when phone is absent", () => {
     setupUseUsers();
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
     const adminRow = screen.getByText("admin@example.com").closest("tr");
     expect(within(adminRow).getByText("-")).toBeInTheDocument();
   });
 
   it("disables deleting your own account", () => {
     setupUseUsers();
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
     const adminRow = screen.getAllByText("admin")[0].closest("tr");
     expect(within(adminRow).getByRole("button", { name: "Delete" })).toBeDisabled();
 
@@ -58,7 +58,7 @@ describe("AdminTab", () => {
     const user = userEvent.setup();
     const hook = setupUseUsers();
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
 
     const bobRow = screen.getByText("bob").closest("tr");
     await user.click(within(bobRow).getByRole("button", { name: "Delete" }));
@@ -70,7 +70,7 @@ describe("AdminTab", () => {
     const user = userEvent.setup();
     const hook = setupUseUsers();
     vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
 
     const bobRow = screen.getByText("bob").closest("tr");
     await user.click(within(bobRow).getByRole("button", { name: "Delete" }));
@@ -80,13 +80,13 @@ describe("AdminTab", () => {
 
   it("shows an empty-state row when there are no users", () => {
     setupUseUsers({ users: [] });
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
     expect(screen.getByText("No users yet.")).toBeInTheDocument();
   });
 
   it("surfaces a fetch error from the hook", () => {
     setupUseUsers({ error: "Failed to fetch users" });
-    render(<AdminTab active currentUsername="admin" />);
+    render(<AdminTab currentUsername="admin" />);
     expect(screen.getByText("Failed to fetch users")).toBeInTheDocument();
   });
 
@@ -98,7 +98,7 @@ describe("AdminTab", () => {
     it("keeps Create disabled until username, email, and matching passwords are all present", async () => {
       const user = userEvent.setup();
       setupUseUsers();
-      render(<AdminTab active currentUsername="admin" />);
+      render(<AdminTab currentUsername="admin" />);
       await openForm(user);
 
       const createButton = screen.getByRole("button", { name: "Create" });
@@ -120,7 +120,7 @@ describe("AdminTab", () => {
     it("submits username, matched password, role, email, and phone", async () => {
       const user = userEvent.setup();
       const hook = setupUseUsers();
-      render(<AdminTab active currentUsername="admin" />);
+      render(<AdminTab currentUsername="admin" />);
       await openForm(user);
 
       await user.type(screen.getByLabelText("Username"), "carol");
@@ -136,7 +136,7 @@ describe("AdminTab", () => {
     it("submits undefined phone when left blank", async () => {
       const user = userEvent.setup();
       const hook = setupUseUsers();
-      render(<AdminTab active currentUsername="admin" />);
+      render(<AdminTab currentUsername="admin" />);
       await openForm(user);
 
       await user.type(screen.getByLabelText("Username"), "carol");
@@ -153,7 +153,7 @@ describe("AdminTab", () => {
     it("reveals matching password fields and calls resetPassword with the new password", async () => {
       const user = userEvent.setup();
       const hook = setupUseUsers();
-      render(<AdminTab active currentUsername="admin" />);
+      render(<AdminTab currentUsername="admin" />);
 
       const bobRow = screen.getByText("bob").closest("tr");
       await user.click(within(bobRow).getByRole("button", { name: "Reset Password" }));
@@ -174,7 +174,7 @@ describe("AdminTab", () => {
     it("keeps Save disabled while the two password fields disagree", async () => {
       const user = userEvent.setup();
       setupUseUsers();
-      render(<AdminTab active currentUsername="admin" />);
+      render(<AdminTab currentUsername="admin" />);
 
       const bobRow = screen.getByText("bob").closest("tr");
       await user.click(within(bobRow).getByRole("button", { name: "Reset Password" }));
@@ -188,7 +188,7 @@ describe("AdminTab", () => {
     it("cancel hides the fields again without calling resetPassword", async () => {
       const user = userEvent.setup();
       const hook = setupUseUsers();
-      render(<AdminTab active currentUsername="admin" />);
+      render(<AdminTab currentUsername="admin" />);
 
       const bobRow = screen.getByText("bob").closest("tr");
       await user.click(within(bobRow).getByRole("button", { name: "Reset Password" }));

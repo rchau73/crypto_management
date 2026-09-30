@@ -64,23 +64,12 @@ export async function fetchAllocations() {
 }
 
 export async function fetchHistory(level) {
-  const res = await apiFetch(`/api/history?level=${level}`);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Failed to fetch history: ${res.status} ${res.statusText} ${text}`);
-  }
-  return res.json();
+  const res = await apiFetch(`/api/history?level=${encodeURIComponent(level)}`);
+  return parseJsonOrThrow(res, "Failed to fetch history");
 }
 
-export async function importWallets(path = "wallet_allocations.csv") {
-  const res = await postJson("/api/import_wallets", { path });
-  return parseJsonOrThrow(res, "Import failed");
-}
-
-// Uploads a CSV file's actual content — unlike importWallets (which asks
-// the server to read a path on its own filesystem), this works regardless
-// of where the backend is deployed, since the browser sends the file
-// itself. Manager+ only, enforced server-side.
+// Uploads a wallet CSV. Only new positions are added; existing ones are
+// never overwritten. Manager+ only, enforced server-side.
 export async function uploadWalletCsv(file) {
   const formData = new FormData();
   formData.append("file", file);
@@ -145,16 +134,14 @@ export async function savePortfolioTargets(rows) {
   return parseJsonOrThrow(res, "Failed to save portfolio targets");
 }
 
-// Corrects a single-source asset's quantity directly (not part of the
-// Save-All batch) — see PortfolioTargetsTab for why this only applies to a
-// row backed by exactly one wallet_allocations source.
-export async function correctWalletQuantity({ symbol, group_name, barca, asset_class, notes, current_quantity }) {
+// Fixes the quantity of a position with exactly one source, immediately
+// (not part of "Save All"). The server refuses multi-source positions.
+export async function correctWalletQuantity({ symbol, group_name, barca, asset_class, current_quantity }) {
   const res = await putJson("/api/portfolio/targets/quantity", {
     symbol,
     group_name,
     barca,
     asset_class,
-    notes,
     current_quantity,
   });
   return parseJsonOrThrow(res, "Failed to correct quantity");

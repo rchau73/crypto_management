@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { createUser, deleteUser, fetchUsers, updateUser } from "../api/client";
 
-// Admin-only user management. `active` should be false while the Admin tab
-// isn't visible, matching the pattern used for the history dashboard.
-export function useUsers(active) {
+// Admin-only user management. Fetches when the Admin tab mounts.
+export function useUsers() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -15,13 +14,14 @@ export function useUsers(active) {
       setUsers(await fetchUsers());
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (active) refresh();
-  }, [active, refresh]);
+    refresh();
+  }, [refresh]);
 
   const create = useCallback(
     async (username, password, role, email, phone) => {
