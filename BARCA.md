@@ -24,9 +24,21 @@ value (the targets add up to 100%). The fifth is a discipline.
 |---|---|---|---|
 | **B** | **Base**: core investment | `Base`: BTC | The long-term core position the whole wallet is built around. |
 | **A** | **Alternative** | `Altcoins`: other crypto assets (Holding + DeFi) | Higher-risk, higher-upside satellite. In crypto this means altcoins; in a regular stock market it could be small caps. |
-| **R** | **Recurrent income** (revenue) | `RendaPassiva`: FIIs (Brazilian real-estate funds) | Income the portfolio pays out on a regular basis. It is the key to a withdrawal strategy, for retirement or for anyone living off the portfolio: you spend the income, not the principal, so the portfolio keeps growing. |
+| **R** | **Recurrent income** (revenue) | `RendaPassiva`: today FIIs (Brazilian real-estate funds) | Income the portfolio pays out on a regular basis. It is the key to a withdrawal strategy, for retirement or for anyone living off the portfolio: you spend the income, not the principal, so the portfolio keeps growing. See the examples below. |
 | **C** | **Cash** | `Caixa`: USDT (stablecoin) | Money available to buy when opportunities appear, and where profits go when taken. **Not** an emergency fund for personal expenses; that belongs outside this wallet. |
 | **A** | **Aprender** (Portuguese for "to learn") | *Not a wallet bucket* | Keep learning about the financial market: new strategies, backtests, anything investment-related. Knowledge is what keeps emotional reactions out of decisions. |
+
+**Examples of Recurrent income sources.** Each pays regularly, but they carry
+very different risks, and that is part of choosing the mix:
+
+- **Real-estate funds (FIIs)**: monthly distributions from rents. This is
+  what the wallet holds today.
+- **Options premium, e.g. short strangles**: selling a call and a put
+  out-of-the-money and collecting the premium, typically on BTC/ETH. It pays
+  well in calm markets, but a strong move past either strike can cost much
+  more than the premium, so position size and roll/exit rules matter.
+- **DeFi pools**: liquidity-provider fees and staking/lending yield. The
+  risks come from smart contracts, the protocol itself and impermanent loss.
 
 Current targets for the four wallet buckets (`BullMarket` profile):
 
