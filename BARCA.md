@@ -20,6 +20,10 @@
 > - **100% the user's responsibility.** Every investment decision, and its
 >   outcome, is solely the responsibility of the person who makes it. The
 >   authors accept no liability for any loss.
+> - **The BARCA model is not an original creation of this project.** It was
+>   compiled from several sources and approaches by other people. All rights
+>   to the model and its ideas belong to their respective authors; this
+>   project only implements and documents them as part of the study.
 
 This app is built around one investment discipline: the **BARCA model**. This
 document explains the *business* side, meaning what the model is, why it
