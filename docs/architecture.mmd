@@ -1,56 +1,57 @@
 flowchart TD
-    subgraph MAIN["Composition Root — src/main.rs"]
-        H1["Axum HTTP handlers\n(api_allocations, api_history, import_wallets_handler)"]
+    subgraph MAIN["Composition root — src/main.rs + src/config.rs"]
+        CFG["AppConfig::from_env()\n(fails fast on missing settings)"]
+        WIRE["AppState::new(repo, providers, config)\nbuild_router(state)"]
     end
 
-    subgraph AUTHMOD["src/auth_handlers.rs — auth & admin HTTP glue"]
-        CU["CurrentUser extractor\n(verifies access_token cookie)"]
-        AH["/api/auth/* handlers\n(login, logout, refresh, me)"]
-        ADMH["/api/admin/users* handlers\n(require_role(Admin))"]
+    subgraph API["src/api/ — HTTP layer (thin handlers)"]
+        CU["auth.rs\nCurrentUser extractor + login/logout/refresh/me"]
+        PH["portfolio.rs\nallocations, history, targets,\nquantity correction, CSV upload"]
+        UH["users.rs\nadmin user CRUD"]
+        ERR["error.rs\nApiError (service errors → status codes)"]
     end
 
-    subgraph USECASES["src/usecases/ — business logic"]
+    subgraph USECASES["src/usecases/ — business rules"]
         CA["compute_allocations\n(pure function, no I/O)"]
-        AS["AllocationsService"]
+        AS["AllocationsService\n(Update Prices)"]
         HS["HistoryService"]
-        AUS["AuthService\n(argon2 verify, JWT issue/verify)"]
-        US["UserService\n(admin CRUD on users)"]
+        TS["TargetsService"]
+        WI["WalletImportService\n(CSV import)"]
+        AUS["AuthService"]
+        US["UserService"]
+        VAL["validation.rs"]
     end
 
     subgraph DOMAIN["src/domain/ — models & ports"]
-        MODELS["models.rs\nCrypto, WalletAllocation, User, Role, snapshot rows"]
-        REPO_PORT["repository.rs\nHistoryRepo, UserRepo, RefreshTokenRepo traits"]
-        MD_PORT["market_data.rs\nCryptoProvider trait"]
+        MODELS["models.rs\nLedgerEntry, WalletPosition, AllocationReport, User, Role"]
+        REPO_PORT["repository.rs\nPortfolioRepo, BarcaTargetRepo, SnapshotRepo,\nUserRepo, RefreshTokenRepo"]
+        MD_PORT["market_data.rs\nCryptoProvider, EquityProvider"]
     end
 
     subgraph INFRA["src/infra/ — adapters"]
-        SQLITE["sqlite/repo.rs\nSqliteRepo\n(implements all 3 repo traits)"]
-        CMC["coinmarketcap.rs\nReqwestCryptoProvider"]
+        SQLITE["sqlite/\nSqliteRepo (all repo traits)"]
+        PROV["coinmarketcap.rs, brapi.rs, finnhub.rs\n(+ http.rs: timeouts, status checks)"]
     end
 
-    H1 -->|requires| CU
-    H1 -->|calls| AS
-    H1 -->|calls| HS
-    AH -->|calls| AUS
-    ADMH -->|calls| US
     CU -->|verifies via| AUS
-    AS -->|calls| CA
+    PH --> AS & HS & TS & WI
+    UH --> US
+    AS --> CA
+    TS --> VAL
+    WI --> VAL
     AS -->|depends on| MD_PORT
-    AS -->|depends on| REPO_PORT
-    HS -->|depends on| REPO_PORT
-    AUS -->|depends on| REPO_PORT
-    US -->|depends on| REPO_PORT
+    AS & HS & TS & WI & AUS & US -->|depend on| REPO_PORT
     CA -->|uses| MODELS
 
     SQLITE -.->|implements| REPO_PORT
-    CMC -.->|implements| MD_PORT
+    PROV -.->|implements| MD_PORT
 
-    MAIN -->|constructs & injects| SQLITE
-    MAIN -->|constructs & injects| CMC
-    MAIN -->|mounts| AUTHMOD
+    WIRE -->|constructs & injects| SQLITE
+    WIRE -->|constructs & injects| PROV
+    WIRE -->|mounts| API
 
     style DOMAIN fill:#1f2937,stroke:#93c5fd,color:#e5e7eb
     style USECASES fill:#1e293b,stroke:#86efac,color:#e5e7eb
     style INFRA fill:#1e293b,stroke:#fca5a5,color:#e5e7eb
     style MAIN fill:#1e293b,stroke:#fcd34d,color:#e5e7eb
-    style AUTHMOD fill:#1e293b,stroke:#f0abfc,color:#e5e7eb
+    style API fill:#1e293b,stroke:#f0abfc,color:#e5e7eb
