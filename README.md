@@ -2,6 +2,8 @@
 
 A full-stack Rust + React dashboard for managing and visualizing your crypto wallet allocations.
 
+**New here? Start with [BARCA.md](BARCA.md)**: the investment model this app implements (BARCA buckets, the ±20% rebalancing bands, Fear & Greed–driven DCA). This README covers the technical side.
+
 ---
 
 ## Features
