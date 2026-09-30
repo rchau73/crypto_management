@@ -32,8 +32,8 @@ use crate::infra::coinmarketcap::ReqwestCryptoProvider;
 use crate::infra::finnhub::FinnhubProvider;
 use crate::infra::sqlite::SqliteRepo;
 use crate::targets_handlers::{
-    get_barca_targets_handler, get_portfolio_targets_handler, save_barca_targets_handler,
-    save_portfolio_targets_handler,
+    correct_wallet_quantity_handler, get_barca_targets_handler, get_portfolio_targets_handler,
+    save_barca_targets_handler, save_portfolio_targets_handler,
 };
 use crate::usecases::auth_service::hash_password;
 use crate::wallet_handlers::{import_wallets_handler, import_wallets_upload_handler};
@@ -238,6 +238,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route(
             "/api/portfolio/targets",
             get(get_portfolio_targets_handler).put(save_portfolio_targets_handler),
+        )
+        .route(
+            "/api/portfolio/targets/quantity",
+            axum::routing::put(correct_wallet_quantity_handler),
         )
         .route(
             "/api/barca/targets",

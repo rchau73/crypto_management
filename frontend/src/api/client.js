@@ -145,6 +145,21 @@ export async function savePortfolioTargets(rows) {
   return parseJsonOrThrow(res, "Failed to save portfolio targets");
 }
 
+// Corrects a single-source asset's quantity directly (not part of the
+// Save-All batch) — see PortfolioTargetsTab for why this only applies to a
+// row backed by exactly one wallet_allocations source.
+export async function correctWalletQuantity({ symbol, group_name, barca, asset_class, notes, current_quantity }) {
+  const res = await putJson("/api/portfolio/targets/quantity", {
+    symbol,
+    group_name,
+    barca,
+    asset_class,
+    notes,
+    current_quantity,
+  });
+  return parseJsonOrThrow(res, "Failed to correct quantity");
+}
+
 export async function fetchBarcaTargets(market) {
   const res = await apiFetch(`/api/barca/targets?market=${encodeURIComponent(market)}`);
   return parseJsonOrThrow(res, "Failed to fetch BARCA targets");

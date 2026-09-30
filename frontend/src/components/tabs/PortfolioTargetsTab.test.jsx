@@ -8,6 +8,7 @@ import * as api from "../../api/client";
 vi.mock("../../hooks/usePortfolioTargets");
 vi.mock("../../api/client", () => ({
   fetchBarcaTargets: vi.fn(),
+  correctWalletQuantity: vi.fn(),
 }));
 
 function setupHook(overrides = {}) {
@@ -29,6 +30,7 @@ describe("PortfolioTargetsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.fetchBarcaTargets.mockResolvedValue([]);
+    api.correctWalletQuantity.mockResolvedValue({ ok: true });
   });
 
   it("lists existing rows", () => {
@@ -106,6 +108,97 @@ describe("PortfolioTargetsTab", () => {
     await user.click(screen.getByRole("button", { name: "Save All" }));
 
     expect(hook.save).toHaveBeenCalledWith([expect.objectContaining({ symbol: "ETH", target_percent: 100 })]);
+  });
+
+  it("corrects a single-source row's quantity via a dedicated endpoint, updating only that row", async () => {
+    const user = userEvent.setup();
+    setupHook();
+    render(<PortfolioTargetsTab active />);
+
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    await user.click(within(btcRow).getByRole("button", { name: "Corrigir" }));
+
+    const correctionInput = within(btcRow).getAllByRole("spinbutton")[1];
+    await user.clear(correctionInput);
+    await user.type(correctionInput, "42");
+    await user.click(within(btcRow).getByRole("button", { name: "Salvar" }));
+
+    await waitFor(() => {
+      expect(api.correctWalletQuantity).toHaveBeenCalledWith({
+        symbol: "BTC",
+        group_name: "Core",
+        barca: "Base",
+        asset_class: "crypto",
+        notes: null,
+        current_quantity: 42,
+      });
+    });
+    // Back to the normal (non-editing) display, now showing the corrected value.
+    expect(within(btcRow).getByRole("button", { name: "Corrigir" })).toBeInTheDocument();
+    expect(within(btcRow).getByDisplayValue("42")).toBeInTheDocument();
+  });
+
+  it("correcting one row's quantity never discards an unsaved Target % edit on another row", async () => {
+    // Regression coverage: this used to call the hook's `refresh()` after a
+    // successful correction, which re-fetched and replaced the ENTIRE
+    // `rows` state from the server — silently reverting any in-progress
+    // batch edit (Target %, Group, BARCA, ...) on every other row that
+    // hadn't been submitted via Save All yet.
+    const user = userEvent.setup();
+    setupHook();
+    render(<PortfolioTargetsTab active />);
+
+    const ethRow = screen.getByDisplayValue("ETH").closest("tr");
+    const ethTarget = within(ethRow).getAllByRole("spinbutton")[0];
+    await user.clear(ethTarget);
+    await user.type(ethTarget, "77");
+
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    await user.click(within(btcRow).getByRole("button", { name: "Corrigir" }));
+    const correctionInput = within(btcRow).getAllByRole("spinbutton")[1];
+    await user.clear(correctionInput);
+    await user.type(correctionInput, "42");
+    await user.click(within(btcRow).getByRole("button", { name: "Salvar" }));
+
+    await waitFor(() => {
+      expect(api.correctWalletQuantity).toHaveBeenCalled();
+    });
+    expect(ethTarget).toHaveValue(77);
+  });
+
+  it("Cancelar closes the correction control without calling the API", async () => {
+    const user = userEvent.setup();
+    setupHook();
+    render(<PortfolioTargetsTab active />);
+
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    await user.click(within(btcRow).getByRole("button", { name: "Corrigir" }));
+    await user.click(within(btcRow).getByRole("button", { name: "Cancelar" }));
+
+    expect(api.correctWalletQuantity).not.toHaveBeenCalled();
+    expect(within(btcRow).getByRole("button", { name: "Corrigir" })).toBeInTheDocument();
+  });
+
+  it("a multi-source row shows 'multi-fonte' instead of a Corrigir control", () => {
+    setupHook({
+      rows: [
+        {
+          symbol: "BTC",
+          group_name: "Core",
+          barca: "Base",
+          asset_class: "crypto",
+          target_percent: 100,
+          current_quantity: 3,
+          last_price: 10,
+          notes: "Binance | Ledger Wallet",
+        },
+      ],
+    });
+    render(<PortfolioTargetsTab active />);
+
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    expect(within(btcRow).queryByRole("button", { name: "Corrigir" })).not.toBeInTheDocument();
+    expect(within(btcRow).getByText("multi-fonte")).toBeInTheDocument();
   });
 
   it("adding a new row requires a symbol before Save is enabled", async () => {
