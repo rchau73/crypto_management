@@ -1,5 +1,8 @@
+//! Admin-only user management. There is no public sign-up: every account
+//! is created here (or seeded on first start by `ensure_admin_exists`).
+
 use crate::domain::models::{Role, User};
-use crate::domain::repository::{NewUser, RepoResult, UserRepo, UserUpdate};
+use crate::domain::repository::{NewUser, RepoError, UniqueViolation, UserRepo, UserUpdate};
 use crate::usecases::auth_service::hash_password;
 use std::fmt;
 use std::sync::Arc;
@@ -10,7 +13,11 @@ pub enum UserServiceError {
     InvalidEmail(String),
     UsernameTaken,
     EmailTaken,
-    Repo(Box<dyn std::error::Error + Send + Sync>),
+    NotFound,
+    CannotDeleteSelf,
+    /// The change would leave nobody able to manage users.
+    LastAdmin,
+    Repo(RepoError),
 }
 
 impl fmt::Display for UserServiceError {
@@ -20,6 +27,9 @@ impl fmt::Display for UserServiceError {
             UserServiceError::InvalidEmail(e) => write!(f, "invalid email: {e}"),
             UserServiceError::UsernameTaken => write!(f, "username already exists"),
             UserServiceError::EmailTaken => write!(f, "email already exists"),
+            UserServiceError::NotFound => write!(f, "user not found"),
+            UserServiceError::CannotDeleteSelf => write!(f, "cannot delete your own account"),
+            UserServiceError::LastAdmin => write!(f, "there must always be at least one admin"),
             UserServiceError::Repo(e) => write!(f, "{e}"),
         }
     }
@@ -27,24 +37,18 @@ impl fmt::Display for UserServiceError {
 
 impl std::error::Error for UserServiceError {}
 
-impl From<Box<dyn std::error::Error + Send + Sync>> for UserServiceError {
-    fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        // sqlx surfaces a UNIQUE constraint violation as a generic DB error;
-        // recognize it by message so callers get a clean 409, not a 500.
-        let msg = e.to_string();
-        if msg.contains("UNIQUE constraint failed: users.username") {
-            UserServiceError::UsernameTaken
-        } else if msg.contains("UNIQUE constraint failed") && msg.contains("email") {
-            UserServiceError::EmailTaken
-        } else {
-            UserServiceError::Repo(e)
+impl From<RepoError> for UserServiceError {
+    fn from(e: RepoError) -> Self {
+        match e.downcast_ref::<UniqueViolation>() {
+            Some(v) if v.constraint.contains("username") => UserServiceError::UsernameTaken,
+            Some(v) if v.constraint.contains("email") => UserServiceError::EmailTaken,
+            _ => UserServiceError::Repo(e),
         }
     }
 }
 
-// Deliberately not a full RFC 5322 validator — just enough to catch obvious
-// typos ("no @ at all", "no domain") without dragging in a regex dependency
-// for a personal app's user list.
+// Deliberately not a full RFC 5322 validator — just enough to catch
+// obvious typos ("no @", "no domain") without a regex dependency.
 fn is_valid_email(email: &str) -> bool {
     let Some((local, domain)) = email.split_once('@') else {
         return false;
@@ -56,8 +60,39 @@ fn is_valid_email(email: &str) -> bool {
         && !domain.contains(' ')
 }
 
-/// Admin-only CRUD over user accounts. There is no public self-registration
-/// endpoint anywhere in this app — every account is created here.
+fn check_role(role: &str) -> Result<Role, UserServiceError> {
+    Role::parse(role).ok_or_else(|| UserServiceError::InvalidRole(role.to_string()))
+}
+
+fn check_email(email: &str) -> Result<(), UserServiceError> {
+    if is_valid_email(email) {
+        Ok(())
+    } else {
+        Err(UserServiceError::InvalidEmail(email.to_string()))
+    }
+}
+
+fn hash(password: &str) -> Result<String, UserServiceError> {
+    hash_password(password).map_err(|e| UserServiceError::Repo(e.to_string().into()))
+}
+
+pub struct CreateUser<'a> {
+    pub username: &'a str,
+    pub password: &'a str,
+    pub role: &'a str,
+    pub email: &'a str,
+    pub phone: Option<&'a str>,
+}
+
+/// A partial update: only the `Some` fields change.
+#[derive(Default)]
+pub struct UpdateUser<'a> {
+    pub role: Option<&'a str>,
+    pub password: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub phone: Option<&'a str>,
+}
+
 pub struct UserService {
     repo: Arc<dyn UserRepo>,
 }
@@ -67,345 +102,305 @@ impl UserService {
         Self { repo }
     }
 
-    pub async fn list(&self) -> RepoResult<Vec<User>> {
-        self.repo.list_users().await
+    pub async fn list(&self) -> Result<Vec<User>, UserServiceError> {
+        Ok(self.repo.list_users().await?)
     }
 
-    pub async fn create(
-        &self,
-        username: &str,
-        password: &str,
-        role: &str,
-        email: &str,
-        phone: Option<&str>,
-    ) -> Result<User, UserServiceError> {
-        Role::parse(role).ok_or_else(|| UserServiceError::InvalidRole(role.to_string()))?;
-        if !is_valid_email(email) {
-            return Err(UserServiceError::InvalidEmail(email.to_string()));
-        }
-        let password_hash =
-            hash_password(password).map_err(|e| UserServiceError::Repo(e.to_string().into()))?;
+    pub async fn find(&self, id: i64) -> Result<User, UserServiceError> {
         self.repo
+            .find_user_by_id(id)
+            .await?
+            .ok_or(UserServiceError::NotFound)
+    }
+
+    pub async fn create(&self, input: CreateUser<'_>) -> Result<User, UserServiceError> {
+        check_role(input.role)?;
+        check_email(input.email)?;
+        let password_hash = hash(input.password)?;
+        let user = self
+            .repo
             .create_user(NewUser {
-                username,
+                username: input.username,
                 password_hash: &password_hash,
-                role,
-                email,
-                phone,
+                role: input.role,
+                email: input.email,
+                phone: input.phone,
             })
-            .await
-            .map_err(Into::into)
+            .await?;
+        Ok(user)
     }
 
-    pub async fn update(
-        &self,
-        id: i64,
-        role: Option<&str>,
-        password: Option<&str>,
-        email: Option<&str>,
-        phone: Option<&str>,
-    ) -> Result<(), UserServiceError> {
-        if let Some(r) = role {
-            Role::parse(r).ok_or_else(|| UserServiceError::InvalidRole(r.to_string()))?;
-        }
-        if let Some(e) = email {
-            if !is_valid_email(e) {
-                return Err(UserServiceError::InvalidEmail(e.to_string()));
+    pub async fn update(&self, id: i64, input: UpdateUser<'_>) -> Result<(), UserServiceError> {
+        if let Some(role) = input.role {
+            if check_role(role)? != Role::Admin {
+                self.ensure_not_last_admin(id).await?;
             }
         }
-        let password_hash = match password {
-            Some(p) => {
-                Some(hash_password(p).map_err(|e| UserServiceError::Repo(e.to_string().into()))?)
-            }
-            None => None,
-        };
-        self.repo
+        if let Some(email) = input.email {
+            check_email(email)?;
+        }
+        let password_hash = input.password.map(hash).transpose()?;
+
+        let found = self
+            .repo
             .update_user(
                 id,
                 UserUpdate {
-                    role,
+                    role: input.role,
                     password_hash: password_hash.as_deref(),
-                    email,
-                    phone,
+                    email: input.email,
+                    phone: input.phone,
                 },
             )
-            .await
-            .map_err(Into::into)
+            .await?;
+        if !found {
+            return Err(UserServiceError::NotFound);
+        }
+        Ok(())
     }
 
-    pub async fn delete(&self, id: i64) -> RepoResult<()> {
-        self.repo.delete_user(id).await
+    /// `acting_user_id` is the admin making the request.
+    pub async fn delete(&self, acting_user_id: i64, id: i64) -> Result<(), UserServiceError> {
+        if acting_user_id == id {
+            return Err(UserServiceError::CannotDeleteSelf);
+        }
+        self.ensure_not_last_admin(id).await?;
+        if !self.repo.delete_user(id).await? {
+            return Err(UserServiceError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Fails if `id` is the only admin, so removing or demoting them would
+    /// lock everyone out of user management.
+    async fn ensure_not_last_admin(&self, id: i64) -> Result<(), UserServiceError> {
+        let admins: Vec<User> = self
+            .repo
+            .list_users()
+            .await?
+            .into_iter()
+            .filter(|u| u.role == Role::Admin.as_str())
+            .collect();
+        if admins.len() == 1 && admins[0].id == Some(id) {
+            return Err(UserServiceError::LastAdmin);
+        }
+        Ok(())
+    }
+
+    /// On first start (no users at all), creates the admin account from the
+    /// given credentials. Returns whether an account was created.
+    pub async fn ensure_admin_exists(
+        &self,
+        username: &str,
+        password: &str,
+        email: &str,
+    ) -> Result<bool, UserServiceError> {
+        if self.repo.count_users().await? > 0 {
+            return Ok(false);
+        }
+        self.create(CreateUser {
+            username,
+            password,
+            role: Role::Admin.as_str(),
+            email,
+            phone: None,
+        })
+        .await?;
+        Ok(true)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::repository::RepoResult as Result_;
-    use async_trait::async_trait;
-    use std::sync::Mutex;
+    use crate::infra::sqlite::test_repo;
 
-    #[derive(Default)]
-    struct FakeUserRepo {
-        users: Mutex<Vec<User>>,
-        next_id: Mutex<i64>,
+    async fn service() -> UserService {
+        UserService::new(test_repo().await)
     }
 
-    #[async_trait]
-    impl UserRepo for FakeUserRepo {
-        async fn find_user_by_username(&self, username: &str) -> Result_<Option<User>> {
-            Ok(self
-                .users
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|u| u.username == username)
-                .cloned())
-        }
-        async fn find_user_by_id(&self, id: i64) -> Result_<Option<User>> {
-            Ok(self
-                .users
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|u| u.id == Some(id))
-                .cloned())
-        }
-        async fn list_users(&self) -> Result_<Vec<User>> {
-            Ok(self.users.lock().unwrap().clone())
-        }
-        async fn count_users(&self) -> Result_<i64> {
-            Ok(self.users.lock().unwrap().len() as i64)
-        }
-        async fn create_user(&self, new_user: NewUser<'_>) -> Result_<User> {
-            let mut users = self.users.lock().unwrap();
-            if users.iter().any(|u| u.username == new_user.username) {
-                return Err("UNIQUE constraint failed: users.username".into());
-            }
-            if users.iter().any(|u| u.email == new_user.email) {
-                return Err("UNIQUE constraint failed: idx_users_email (email)".into());
-            }
-            let mut next_id = self.next_id.lock().unwrap();
-            *next_id += 1;
-            let user = User {
-                id: Some(*next_id),
-                username: new_user.username.to_string(),
-                password_hash: new_user.password_hash.to_string(),
-                role: new_user.role.to_string(),
-                email: new_user.email.to_string(),
-                phone: new_user.phone.map(|p| p.to_string()),
-                created_at: None,
-                updated_at: None,
-            };
-            users.push(user.clone());
-            Ok(user)
-        }
-        async fn update_user(&self, id: i64, update: UserUpdate<'_>) -> Result_<()> {
-            let mut users = self.users.lock().unwrap();
-            if let Some(u) = users.iter_mut().find(|u| u.id == Some(id)) {
-                if let Some(r) = update.role {
-                    u.role = r.to_string();
-                }
-                if let Some(p) = update.password_hash {
-                    u.password_hash = p.to_string();
-                }
-                if let Some(e) = update.email {
-                    u.email = e.to_string();
-                }
-                if let Some(p) = update.phone {
-                    u.phone = Some(p.to_string());
-                }
-            }
-            Ok(())
-        }
-        async fn delete_user(&self, id: i64) -> Result_<()> {
-            self.users.lock().unwrap().retain(|u| u.id != Some(id));
-            Ok(())
+    fn new_user<'a>(username: &'a str, role: &'a str, email: &'a str) -> CreateUser<'a> {
+        CreateUser {
+            username,
+            password: "password123",
+            role,
+            email,
+            phone: None,
         }
     }
 
-    #[tokio::test]
-    async fn create_rejects_an_invalid_role_before_touching_the_repo() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
-        let result = service
-            .create(
-                "alice",
-                "password123",
-                "superuser",
-                "alice@example.com",
-                None,
-            )
-            .await;
-        assert!(matches!(result, Err(UserServiceError::InvalidRole(_))));
-    }
-
-    #[tokio::test]
-    async fn create_rejects_an_email_with_no_at_sign() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
-        let result = service
-            .create("alice", "password123", "user", "not-an-email", None)
-            .await;
-        assert!(matches!(result, Err(UserServiceError::InvalidEmail(_))));
-    }
-
-    #[tokio::test]
-    async fn create_rejects_an_email_with_no_domain_dot() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
-        let result = service
-            .create("alice", "password123", "user", "alice@localhost", None)
-            .await;
-        assert!(matches!(result, Err(UserServiceError::InvalidEmail(_))));
-    }
-
-    #[tokio::test]
-    async fn create_accepts_a_well_formed_email_and_an_absent_phone() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
-        let user = service
-            .create("alice", "password123", "user", "alice@example.com", None)
+    async fn create(service: &UserService, username: &str, role: &str) -> i64 {
+        let email = format!("{username}@example.com");
+        service
+            .create(new_user(username, role, &email))
             .await
-            .unwrap();
-        assert_eq!(user.email, "alice@example.com");
-        assert_eq!(user.phone, None);
+            .unwrap()
+            .id
+            .unwrap()
     }
 
     #[tokio::test]
-    async fn create_hashes_the_password_rather_than_storing_it_plain() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
+    async fn create_validates_role_and_email_before_writing() {
+        let service = service().await;
+        let bad_role = service
+            .create(new_user("alice", "superuser", "alice@example.com"))
+            .await;
+        assert!(matches!(bad_role, Err(UserServiceError::InvalidRole(_))));
+
+        for email in ["not-an-email", "alice@localhost", "@example.com", "a@.com"] {
+            let result = service.create(new_user("alice", "user", email)).await;
+            assert!(
+                matches!(result, Err(UserServiceError::InvalidEmail(_))),
+                "{email}"
+            );
+        }
+        assert!(service.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_hashes_the_password() {
+        let service = service().await;
         let user = service
-            .create("alice", "password123", "admin", "alice@example.com", None)
+            .create(new_user("alice", "admin", "alice@example.com"))
             .await
             .unwrap();
         assert_ne!(user.password_hash, "password123");
     }
 
     #[tokio::test]
-    async fn create_surfaces_a_duplicate_username_as_a_typed_error() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
+    async fn duplicate_username_and_email_are_typed_errors() {
+        let service = service().await;
         service
-            .create("alice", "password123", "user", "alice@example.com", None)
+            .create(new_user("alice", "user", "alice@example.com"))
             .await
             .unwrap();
-        let result = service
-            .create(
-                "alice",
-                "different-password",
-                "admin",
-                "alice2@example.com",
-                None,
-            )
+
+        let same_name = service
+            .create(new_user("alice", "user", "other@example.com"))
             .await;
-        assert!(matches!(result, Err(UserServiceError::UsernameTaken)));
+        assert!(matches!(same_name, Err(UserServiceError::UsernameTaken)));
+        let same_email = service
+            .create(new_user("bob", "user", "alice@example.com"))
+            .await;
+        assert!(matches!(same_email, Err(UserServiceError::EmailTaken)));
     }
 
     #[tokio::test]
-    async fn create_surfaces_a_duplicate_email_as_a_typed_error() {
-        let service = UserService::new(Arc::new(FakeUserRepo::default()));
+    async fn update_changes_only_the_given_fields() {
+        let service = service().await;
+        let id = create(&service, "carol", "manager").await;
+        let before = service.find(id).await.unwrap();
+
         service
-            .create("alice", "password123", "user", "shared@example.com", None)
-            .await
-            .unwrap();
-        let result = service
-            .create("alice2", "password123", "user", "shared@example.com", None)
-            .await;
-        assert!(matches!(result, Err(UserServiceError::EmailTaken)));
-    }
-
-    #[tokio::test]
-    async fn update_with_an_invalid_role_is_rejected_and_changes_nothing() {
-        let repo = Arc::new(FakeUserRepo::default());
-        let service = UserService::new(repo.clone());
-        let user = service
-            .create("bob", "password123", "user", "bob@example.com", None)
-            .await
-            .unwrap();
-
-        let result = service
-            .update(user.id.unwrap(), Some("superuser"), None, None, None)
-            .await;
-        assert!(matches!(result, Err(UserServiceError::InvalidRole(_))));
-
-        let unchanged = repo
-            .find_user_by_id(user.id.unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(unchanged.role, "user");
-    }
-
-    #[tokio::test]
-    async fn update_with_an_invalid_email_is_rejected_and_changes_nothing() {
-        let repo = Arc::new(FakeUserRepo::default());
-        let service = UserService::new(repo.clone());
-        let user = service
-            .create("bob", "password123", "user", "bob@example.com", None)
-            .await
-            .unwrap();
-
-        let result = service
-            .update(user.id.unwrap(), None, None, Some("not-an-email"), None)
-            .await;
-        assert!(matches!(result, Err(UserServiceError::InvalidEmail(_))));
-
-        let unchanged = repo
-            .find_user_by_id(user.id.unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(unchanged.email, "bob@example.com");
-    }
-
-    #[tokio::test]
-    async fn update_password_only_rehashes_the_password_field() {
-        let repo = Arc::new(FakeUserRepo::default());
-        let service = UserService::new(repo.clone());
-        let user = service
-            .create(
-                "carol",
-                "old-password",
-                "manager",
-                "carol@example.com",
-                None,
+            .update(
+                id,
+                UpdateUser {
+                    password: Some("new-password"),
+                    phone: Some("+1-555-0100"),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
-        let original_hash = user.password_hash.clone();
 
-        service
-            .update(user.id.unwrap(), None, Some("new-password"), None, None)
-            .await
-            .unwrap();
-
-        let updated = repo
-            .find_user_by_id(user.id.unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.role, "manager"); // untouched
-        assert_eq!(updated.email, "carol@example.com"); // untouched
-        assert_ne!(updated.password_hash, original_hash);
-        assert_ne!(updated.password_hash, "new-password"); // still hashed, not plaintext
+        let after = service.find(id).await.unwrap();
+        assert_eq!(after.role, "manager");
+        assert_eq!(after.email, before.email);
+        assert_eq!(after.phone.as_deref(), Some("+1-555-0100"));
+        assert_ne!(after.password_hash, before.password_hash);
+        assert_ne!(after.password_hash, "new-password");
     }
 
     #[tokio::test]
-    async fn update_can_set_phone_without_touching_anything_else() {
-        let repo = Arc::new(FakeUserRepo::default());
-        let service = UserService::new(repo.clone());
-        let user = service
-            .create("dave", "password123", "user", "dave@example.com", None)
-            .await
-            .unwrap();
+    async fn update_rejects_bad_input_and_unknown_users() {
+        let service = service().await;
+        let id = create(&service, "bob", "user").await;
 
-        service
-            .update(user.id.unwrap(), None, None, None, Some("+1-555-0100"))
-            .await
-            .unwrap();
+        let bad_role = UpdateUser {
+            role: Some("superuser"),
+            ..Default::default()
+        };
+        assert!(matches!(
+            service.update(id, bad_role).await,
+            Err(UserServiceError::InvalidRole(_))
+        ));
+        let bad_email = UpdateUser {
+            email: Some("nope"),
+            ..Default::default()
+        };
+        assert!(matches!(
+            service.update(id, bad_email).await,
+            Err(UserServiceError::InvalidEmail(_))
+        ));
+        assert!(matches!(
+            service.update(9999, UpdateUser::default()).await,
+            Err(UserServiceError::NotFound)
+        ));
+        assert_eq!(service.find(id).await.unwrap().role, "user");
+    }
 
-        let updated = repo
-            .find_user_by_id(user.id.unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.phone.as_deref(), Some("+1-555-0100"));
-        assert_eq!(updated.email, "dave@example.com"); // untouched
+    #[tokio::test]
+    async fn the_last_admin_cannot_be_demoted_but_one_of_two_can() {
+        let service = service().await;
+        let admin = create(&service, "admin", "admin").await;
+        let demote = || UpdateUser {
+            role: Some("user"),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            service.update(admin, demote()).await,
+            Err(UserServiceError::LastAdmin)
+        ));
+
+        create(&service, "admin2", "admin").await;
+        service.update(admin, demote()).await.unwrap();
+        assert_eq!(service.find(admin).await.unwrap().role, "user");
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_self_the_last_admin_and_unknown_users() {
+        let service = service().await;
+        let admin = create(&service, "admin", "admin").await;
+        let manager = create(&service, "manager", "manager").await;
+
+        assert!(matches!(
+            service.delete(admin, admin).await,
+            Err(UserServiceError::CannotDeleteSelf)
+        ));
+        assert!(matches!(
+            service.delete(manager, admin).await,
+            Err(UserServiceError::LastAdmin)
+        ));
+        assert!(matches!(
+            service.delete(admin, 9999).await,
+            Err(UserServiceError::NotFound)
+        ));
+
+        service.delete(admin, manager).await.unwrap();
+        assert!(matches!(
+            service.find(manager).await,
+            Err(UserServiceError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn ensure_admin_exists_only_seeds_an_empty_user_table() {
+        let service = service().await;
+        assert!(
+            service
+                .ensure_admin_exists("root", "pw", "root@example.com")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !service
+                .ensure_admin_exists("root2", "pw", "root2@example.com")
+                .await
+                .unwrap()
+        );
+        let users = service.list().await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].role, "admin");
     }
 }

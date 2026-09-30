@@ -1,354 +1,308 @@
-use crate::domain::models::MarketQuote;
-use crate::domain::models::WalletAllocation as DomainWalletAllocation;
-use serde_json::json;
-use std::collections::HashMap;
+//! The allocation math: a pure function (no I/O) from positions + prices +
+//! BARCA targets to the report shown in the UI.
 
+use crate::domain::models::{
+    AllocationReport, AssetAllocation, BarcaActual, BarcaAllocation, GroupAllocation, MarketQuote,
+    WalletPosition,
+};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// Running totals for one (symbol, group, barca) row.
+#[derive(Default)]
+struct AssetTotals {
+    price: f64,
+    quantity: f64,
+    value: f64,
+    target_percent: f64,
+}
+
+/// `part` as a percentage of `total`, or 0 when the total is 0 (never NaN).
+fn percent_of(part: f64, total: f64) -> f64 {
+    if total > 0.0 {
+        part / total * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// Builds the allocation report. Every list is sorted by name, so the
+/// output is stable between calls.
+///
+/// A position whose symbol has no price is left out entirely (it is not
+/// valued at 0), because showing a $0 holding would misrepresent the
+/// portfolio. Its target still counts towards its group's target.
 pub fn compute_allocations(
-    allocations: &[DomainWalletAllocation],
+    positions: &[WalletPosition],
     quotes: &[MarketQuote],
     barca_targets: &HashMap<String, f64>,
-) -> serde_json::Value {
-    // Build crypto lookup map
-    let quote_map: HashMap<String, &MarketQuote> =
-        quotes.iter().map(|c| (c.symbol.clone(), c)).collect();
-
-    let mut asset_values: HashMap<(String, String, String), (f64, f64)> = HashMap::new(); // (value, quantity)
-    let mut total_wallet_value = 0.0;
-
-    for alloc in allocations {
-        let symbol = alloc.symbol.clone();
-        if let Some(crypto) = quote_map.get(&symbol) {
-            let price = crypto.price;
-            let qty = alloc.current_quantity.unwrap_or(0.0);
-            let value = qty * price;
-            let group = alloc.group_name.clone().unwrap_or_default();
-            let barca = alloc.barca.clone().unwrap_or_default();
-            let key = (symbol.clone(), group.clone(), barca.clone());
-            asset_values
-                .entry(key)
-                .and_modify(|(v, q)| {
-                    *v += value;
-                    *q += qty;
-                })
-                .or_insert((value, qty));
-            total_wallet_value += value;
-        }
-    }
-
-    // Build per_asset table: one row per unique (symbol, group, barca)
-    let per_asset: Vec<_> = asset_values
+) -> AllocationReport {
+    let prices: HashMap<&str, f64> = quotes
         .iter()
-        .map(|((symbol, group, barca), (value, quantity))| {
-            let price = quote_map.get(symbol).map(|c| c.price).unwrap_or(0.0);
-            let target_percent = allocations
-                .iter()
-                .filter(|a| {
-                    a.symbol == *symbol
-                        && a.group_name.as_deref().unwrap_or("") == group
-                        && a.barca.as_deref().unwrap_or("") == barca
-                })
-                .map(|a| a.target_percent.unwrap_or(0.0))
-                .sum::<f64>();
-            let current_percent = if total_wallet_value != 0.0 {
-                (*value / total_wallet_value) * 100.0
-            } else {
-                0.0
-            };
-            let deviation = current_percent - target_percent;
-            json!({
-                "symbol": symbol,
-                "group": group,
-                "barca": barca,
-                "price": price,
-                "current_quantity": quantity,
-                "value": value,
-                "target_percent": target_percent,
-                "current_percent": current_percent,
-                "deviation": deviation
-            })
+        .map(|q| (q.symbol.as_str(), q.price))
+        .collect();
+
+    // 1. Value each priced position. Positions that differ only by asset
+    //    class are merged into one row.
+    let mut assets: BTreeMap<(String, String, String), AssetTotals> = BTreeMap::new();
+    for position in positions {
+        let Some(&price) = prices.get(position.symbol.as_str()) else {
+            continue;
+        };
+        let key = (
+            position.symbol.clone(),
+            position.group_name.clone().unwrap_or_default(),
+            position.barca.clone().unwrap_or_default(),
+        );
+        let totals = assets.entry(key).or_default();
+        totals.price = price;
+        totals.quantity += position.current_quantity;
+        totals.value += position.current_quantity * price;
+        totals.target_percent += position.target_percent;
+    }
+    let total_value: f64 = assets.values().map(|a| a.value).sum();
+
+    let per_asset = assets
+        .iter()
+        .map(|((symbol, group, barca), totals)| {
+            let current_percent = percent_of(totals.value, total_value);
+            AssetAllocation {
+                symbol: symbol.clone(),
+                group: group.clone(),
+                barca: barca.clone(),
+                price: totals.price,
+                current_quantity: totals.quantity,
+                value: totals.value,
+                target_percent: totals.target_percent,
+                current_percent,
+                deviation: current_percent - totals.target_percent,
+            }
         })
         .collect();
 
-    // Aggregate group targets and values
-    let mut group_target_values: HashMap<String, f64> = HashMap::new();
-    for alloc in allocations {
-        let total = total_wallet_value * alloc.target_percent.unwrap_or(0.0) / 100.0;
-        *group_target_values
-            .entry(alloc.group_name.clone().unwrap_or_default())
-            .or_insert(0.0) += total;
+    // 2. Groups: value from priced assets, target from every position.
+    let mut group_values: BTreeMap<String, f64> = BTreeMap::new();
+    let mut barca_values: BTreeMap<String, f64> = BTreeMap::new();
+    for ((_, group, barca), totals) in &assets {
+        *group_values.entry(group.clone()).or_default() += totals.value;
+        *barca_values.entry(barca.clone()).or_default() += totals.value;
+    }
+    let mut group_targets: HashMap<String, f64> = HashMap::new();
+    for position in positions {
+        let group = position.group_name.clone().unwrap_or_default();
+        *group_targets.entry(group).or_default() += position.target_percent;
     }
 
-    // Aggregate group actual values by group
-    let mut group_values: HashMap<String, f64> = HashMap::new();
-    for ((_, group, _), (value, _quantity)) in &asset_values {
-        *group_values.entry(group.clone()).or_insert(0.0) += *value;
-    }
-
-    // Build per_group
-    let per_group: Vec<_> = group_values
+    let per_group = group_values
         .iter()
-        .map(|(group, group_value)| {
-            let group_target_value = group_target_values.get(group).copied().unwrap_or(0.0);
-            let group_target_percent = if total_wallet_value > 0.0 {
-                (group_target_value / total_wallet_value) * 100.0
-            } else {
-                0.0
-            };
-            let group_percent = if total_wallet_value > 0.0 {
-                (*group_value / total_wallet_value) * 100.0
-            } else {
-                0.0
-            };
-            let deviation = group_percent - group_target_percent;
-            json!({
-                "group": group,
-                "target_percent": group_target_percent,
-                "current_percent": group_percent,
-                "deviation": deviation,
-                "value": group_value
-            })
+        .map(|(group, &value)| {
+            let target_percent = group_targets.get(group).copied().unwrap_or(0.0);
+            let current_percent = percent_of(value, total_value);
+            GroupAllocation {
+                group: group.clone(),
+                value,
+                target_percent,
+                current_percent,
+                deviation: current_percent - target_percent,
+            }
         })
         .collect();
 
-    // Aggregate barca values
-    let mut barca_values: HashMap<String, f64> = HashMap::new();
-    for ((_, _, barca), (value, _quantity)) in &asset_values {
-        *barca_values.entry(barca.clone()).or_insert(0.0) += *value;
-    }
-
-    let per_barca: Vec<_> = barca_targets
+    // 3. BARCA vs. target: one row per barca that has a target.
+    let sorted_targets: BTreeMap<&String, f64> =
+        barca_targets.iter().map(|(b, &t)| (b, t)).collect();
+    let per_barca = sorted_targets
         .iter()
-        .map(|(barca, barca_target)| {
-            let barca_value = barca_values.get(barca).copied().unwrap_or(0.0);
-            let barca_percent = if total_wallet_value > 0.0 {
-                (barca_value / total_wallet_value) * 100.0
-            } else {
-                0.0
-            };
-            let deviation = barca_percent - barca_target;
-            json!({
-                "barca": barca,
-                "value": barca_value,
-                "target_percent": barca_target,
-                "current_percent": barca_percent,
-                "deviation": deviation
-            })
-        })
-        .collect();
-
-    // per_barca_actual — every barca that has either an actual value or a
-    // target (not just ones with a priced asset), so a barca a manager just
-    // added a target for (e.g. via the BARCA Targets tab) but hasn't bought
-    // into yet still shows up here at 0%, letting them compare target vs.
-    // actual at a glance instead of the barca silently disappearing from
-    // the table/pie until it holds something.
-    let barca_names_with_value_or_target: std::collections::HashSet<&String> =
-        barca_values.keys().chain(barca_targets.keys()).collect();
-    let per_barca_actual: Vec<_> = barca_names_with_value_or_target
-        .iter()
-        .map(|barca| {
+        .map(|(barca, &target_percent)| {
             let value = barca_values.get(*barca).copied().unwrap_or(0.0);
-            let current_percent = if total_wallet_value > 0.0 {
-                (value / total_wallet_value) * 100.0
-            } else {
-                0.0
-            };
-            json!({
-                "barca": barca,
-                "value": value,
-                "current_percent": current_percent
-            })
+            let current_percent = percent_of(value, total_value);
+            BarcaAllocation {
+                barca: (*barca).clone(),
+                value,
+                target_percent,
+                current_percent,
+                deviation: current_percent - target_percent,
+            }
         })
         .collect();
 
-    json!({
-        "per_asset": per_asset,
-        "per_group": per_group,
-        "per_barca": per_barca,
-        "per_barca_actual": per_barca_actual
-    })
+    // 4. BARCA actuals: every barca with holdings *or* a target, so a barca
+    //    that was just given a target still shows up (at 0%).
+    let all_barcas: BTreeSet<&String> = barca_values.keys().chain(barca_targets.keys()).collect();
+    let per_barca_actual = all_barcas
+        .into_iter()
+        .map(|barca| {
+            let value = barca_values.get(barca).copied().unwrap_or(0.0);
+            BarcaActual {
+                barca: barca.clone(),
+                value,
+                current_percent: percent_of(value, total_value),
+            }
+        })
+        .collect();
+
+    AllocationReport {
+        total_value,
+        per_asset,
+        per_group,
+        per_barca,
+        per_barca_actual,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::models::WalletAllocation;
 
-    fn make_quote(symbol: &str, price: f64) -> MarketQuote {
+    fn quote(symbol: &str, price: f64) -> MarketQuote {
         MarketQuote {
             symbol: symbol.to_string(),
             price,
-            market_cap: 0.0,
-            fdv: 0.0,
-            volume_24h: 0.0,
-            percent_change_24h: 0.0,
-            percent_change_7d: 0.0,
         }
     }
 
-    fn make_alloc(
-        symbol: &str,
-        group: &str,
-        barca: &str,
-        target: f64,
-        qty: f64,
-    ) -> WalletAllocation {
-        WalletAllocation {
-            id: None,
+    fn position(symbol: &str, group: &str, barca: &str, target: f64, qty: f64) -> WalletPosition {
+        WalletPosition {
             symbol: symbol.to_string(),
             group_name: Some(group.to_string()),
             barca: Some(barca.to_string()),
-            target_percent: Some(target),
-            current_quantity: Some(qty),
+            asset_class: "crypto".to_string(),
+            target_percent: target,
+            current_quantity: qty,
             last_price: None,
             notes: None,
-            asset_class: "crypto".to_string(),
-            created_at: None,
+            source_count: 1,
         }
     }
 
+    fn targets(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
+        pairs.iter().map(|(b, t)| (b.to_string(), *t)).collect()
+    }
+
     #[test]
-    fn happy_path_computes_one_row_per_asset() {
-        let allocations = vec![
-            make_alloc("BTC", "Core", "A", 50.0, 1.0),
-            make_alloc("ETH", "Core", "A", 50.0, 2.0),
+    fn values_each_asset_and_computes_percentages() {
+        let positions = vec![
+            position("BTC", "Core", "A", 50.0, 1.0),
+            position("ETH", "Core", "A", 50.0, 2.0),
         ];
-        let quotes = vec![make_quote("BTC", 10.0), make_quote("ETH", 5.0)];
-        let mut barca_targets = HashMap::new();
-        barca_targets.insert("A".to_string(), 100.0);
-
-        let result = compute_allocations(&allocations, &quotes, &barca_targets);
-        let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
-        assert_eq!(per_asset.len(), 2);
-
-        let total_value = per_asset
-            .iter()
-            .map(|a| a.get("value").and_then(|v| v.as_f64()).unwrap())
-            .sum::<f64>();
-        assert!((total_value - 20.0).abs() < f64::EPSILON); // 1*10 + 2*5
-    }
-
-    #[test]
-    fn per_barca_actual_includes_a_targeted_barca_with_zero_current_value() {
-        // A manager can add a barca target (e.g. via the BARCA Targets tab)
-        // before holding anything in it yet — it must still show up in the
-        // actual-side table/pie at 0%, not vanish until priced holdings
-        // exist, so target vs. actual stays comparable at a glance.
-        let allocations = vec![make_alloc("BTC", "Core", "Base", 50.0, 1.0)];
-        let quotes = vec![make_quote("BTC", 10.0)];
-        let mut barca_targets = HashMap::new();
-        barca_targets.insert("Base".to_string(), 50.0);
-        barca_targets.insert("Renda Variavel".to_string(), 50.0);
-
-        let result = compute_allocations(&allocations, &quotes, &barca_targets);
-        let per_barca_actual = result.get("per_barca_actual").unwrap().as_array().unwrap();
-
-        assert_eq!(per_barca_actual.len(), 2);
-        let renda_variavel = per_barca_actual
-            .iter()
-            .find(|b| b["barca"] == "Renda Variavel")
-            .unwrap();
-        assert_eq!(renda_variavel["value"].as_f64().unwrap(), 0.0);
-        assert_eq!(renda_variavel["current_percent"].as_f64().unwrap(), 0.0);
-    }
-
-    #[test]
-    fn unknown_symbol_is_dropped_silently_not_priced_as_zero() {
-        // A wallet row with no matching price feed entry must not show up as
-        // a $0 holding — that would misrepresent the portfolio rather than
-        // just omitting data we don't have yet.
-        let allocations = vec![make_alloc("UNKNOWN", "Core", "A", 100.0, 1.0)];
-        let quotes = vec![make_quote("BTC", 10.0)];
-        let barca_targets = HashMap::new();
-
-        let result = compute_allocations(&allocations, &quotes, &barca_targets);
-        let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
-        assert_eq!(per_asset.len(), 0);
-    }
-
-    #[test]
-    fn empty_input_returns_empty_tables_not_an_error() {
-        let allocations: Vec<WalletAllocation> = vec![];
-        let quotes: Vec<MarketQuote> = vec![];
-        let barca_targets = HashMap::new();
-
-        let result = compute_allocations(&allocations, &quotes, &barca_targets);
-        assert!(
-            result
-                .get("per_asset")
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .is_empty()
+        let report = compute_allocations(
+            &positions,
+            &[quote("BTC", 10.0), quote("ETH", 5.0)],
+            &targets(&[("A", 100.0)]),
         );
-        assert!(
-            result
-                .get("per_group")
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            result
-                .get("per_barca")
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+
+        assert_eq!(report.total_value, 20.0);
+        assert_eq!(report.per_asset.len(), 2);
+        let btc = &report.per_asset[0];
+        assert_eq!(btc.symbol, "BTC");
+        assert_eq!(btc.value, 10.0);
+        assert_eq!(btc.current_percent, 50.0);
+        assert_eq!(btc.deviation, 0.0);
     }
 
     #[test]
-    fn zero_total_value_avoids_division_by_zero() {
-        // Every allocation has a zero quantity, so total wallet value is 0.
-        // Percentages must come back as 0.0, not NaN/inf.
-        let allocations = vec![make_alloc("BTC", "Core", "A", 100.0, 0.0)];
-        let quotes = vec![make_quote("BTC", 10.0)];
-        let mut barca_targets = HashMap::new();
-        barca_targets.insert("A".to_string(), 100.0);
-
-        let result = compute_allocations(&allocations, &quotes, &barca_targets);
-        let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
-        let current_percent = per_asset[0]
-            .get("current_percent")
-            .unwrap()
-            .as_f64()
-            .unwrap();
-        assert_eq!(current_percent, 0.0);
-    }
-
-    #[test]
-    fn same_symbol_across_two_wallets_aggregates_into_one_row() {
-        // Two ledger entries for BTC in the same group/barca (e.g. one per
-        // exchange) must collapse into a single per_asset row with summed
-        // quantity/value, not two competing rows.
-        let allocations = vec![
-            make_alloc("BTC", "Core", "A", 30.0, 1.0),
-            make_alloc("BTC", "Core", "A", 20.0, 0.5),
+    fn output_is_sorted_so_it_is_stable_between_calls() {
+        let positions = vec![
+            position("SOL", "Z", "B", 0.0, 1.0),
+            position("ADA", "A", "A", 0.0, 1.0),
         ];
-        let quotes = vec![make_quote("BTC", 10.0)];
-        let mut barca_targets = HashMap::new();
-        barca_targets.insert("A".to_string(), 100.0);
+        let report = compute_allocations(
+            &positions,
+            &[quote("SOL", 1.0), quote("ADA", 1.0)],
+            &targets(&[("B", 50.0), ("A", 50.0)]),
+        );
 
-        let result = compute_allocations(&allocations, &quotes, &barca_targets);
-        let per_asset = result.get("per_asset").unwrap().as_array().unwrap();
-        assert_eq!(per_asset.len(), 1);
-        assert_eq!(
-            per_asset[0]
-                .get("current_quantity")
-                .unwrap()
-                .as_f64()
-                .unwrap(),
-            1.5
+        let symbols: Vec<_> = report.per_asset.iter().map(|a| a.symbol.as_str()).collect();
+        assert_eq!(symbols, ["ADA", "SOL"]);
+        let groups: Vec<_> = report.per_group.iter().map(|g| g.group.as_str()).collect();
+        assert_eq!(groups, ["A", "Z"]);
+        let barcas: Vec<_> = report.per_barca.iter().map(|b| b.barca.as_str()).collect();
+        assert_eq!(barcas, ["A", "B"]);
+    }
+
+    #[test]
+    fn an_unpriced_symbol_is_left_out_not_valued_at_zero() {
+        let report = compute_allocations(
+            &[position("UNKNOWN", "Core", "A", 100.0, 1.0)],
+            &[quote("BTC", 10.0)],
+            &HashMap::new(),
         );
-        assert_eq!(
-            per_asset[0]
-                .get("target_percent")
-                .unwrap()
-                .as_f64()
-                .unwrap(),
-            50.0
+        assert!(report.per_asset.is_empty());
+        assert_eq!(report.total_value, 0.0);
+    }
+
+    #[test]
+    fn empty_input_gives_an_empty_report() {
+        let report = compute_allocations(&[], &[], &HashMap::new());
+        assert_eq!(report, AllocationReport::default());
+    }
+
+    #[test]
+    fn a_zero_total_gives_zero_percentages_not_nan() {
+        let report = compute_allocations(
+            &[position("BTC", "Core", "A", 100.0, 0.0)],
+            &[quote("BTC", 10.0)],
+            &targets(&[("A", 100.0)]),
         );
+        assert_eq!(report.per_asset[0].current_percent, 0.0);
+        assert_eq!(report.per_group[0].current_percent, 0.0);
+        assert_eq!(report.per_barca[0].current_percent, 0.0);
+    }
+
+    #[test]
+    fn positions_sharing_symbol_group_and_barca_merge_into_one_row() {
+        let mut us_class = position("BTC", "Core", "A", 20.0, 0.5);
+        us_class.asset_class = "us-indices".to_string();
+        let report = compute_allocations(
+            &[position("BTC", "Core", "A", 30.0, 1.0), us_class],
+            &[quote("BTC", 10.0)],
+            &HashMap::new(),
+        );
+        assert_eq!(report.per_asset.len(), 1);
+        assert_eq!(report.per_asset[0].current_quantity, 1.5);
+        assert_eq!(report.per_asset[0].target_percent, 50.0);
+    }
+
+    #[test]
+    fn group_target_includes_positions_that_have_no_price_yet() {
+        let report = compute_allocations(
+            &[
+                position("BTC", "Core", "A", 30.0, 1.0),
+                position("NEW", "Core", "A", 20.0, 1.0), // not priced
+            ],
+            &[quote("BTC", 10.0)],
+            &HashMap::new(),
+        );
+        assert_eq!(report.per_group.len(), 1);
+        assert_eq!(report.per_group[0].target_percent, 50.0);
+        assert_eq!(report.per_group[0].current_percent, 100.0);
+        assert_eq!(report.per_group[0].deviation, 50.0);
+    }
+
+    #[test]
+    fn a_barca_with_a_target_but_no_holdings_still_appears_at_zero() {
+        let report = compute_allocations(
+            &[position("BTC", "Core", "Base", 50.0, 1.0)],
+            &[quote("BTC", 10.0)],
+            &targets(&[("Base", 50.0), ("Renda Variavel", 50.0)]),
+        );
+
+        assert_eq!(report.per_barca_actual.len(), 2);
+        let empty = &report.per_barca_actual[1];
+        assert_eq!(empty.barca, "Renda Variavel");
+        assert_eq!(empty.value, 0.0);
+        let empty_target = &report.per_barca[1];
+        assert_eq!(empty_target.deviation, -50.0);
+    }
+
+    #[test]
+    fn a_barca_with_holdings_but_no_target_is_only_in_the_actuals() {
+        let report = compute_allocations(
+            &[position("BTC", "Core", "Untargeted", 0.0, 1.0)],
+            &[quote("BTC", 10.0)],
+            &HashMap::new(),
+        );
+        assert!(report.per_barca.is_empty());
+        assert_eq!(report.per_barca_actual.len(), 1);
+        assert_eq!(report.per_barca_actual[0].current_percent, 100.0);
     }
 }
