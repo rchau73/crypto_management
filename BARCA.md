@@ -1,5 +1,26 @@
 # The BARCA model
 
+> [!CAUTION]
+> ## ⚠️ Disclaimer — not investment advice
+>
+> **This project is a software engineering study.** It deals with crypto and
+> financial-market data, but it is **not** meant to recommend any investment,
+> asset, strategy, trade or timing, and nothing in the app or its
+> documentation is financial advice.
+>
+> - **Use at your own risk.** Anyone who uses this software, or the BARCA
+>   model described here, to make real investment decisions does so entirely
+>   at their own risk.
+> - **The app sees only part of the picture.** Real decisions depend on
+>   external and macroeconomic information (interest rates, liquidity,
+>   regulation, news, market sentiment, personal circumstances...) that the
+>   app does not collect or analyse.
+> - **Data can be wrong or late.** Prices come from third-party APIs and may be
+>   delayed, missing or incorrect, and the software may contain bugs.
+> - **100% the user's responsibility.** Every investment decision, and its
+>   outcome, is solely the responsibility of the person who makes it. The
+>   authors accept no liability for any loss.
+
 This app exists to run one investment discipline: the **BARCA model**. This
 document explains the *business* side, meaning what the model is, why it
 works and how to act on it. [README.md](README.md) covers the technical side.
@@ -8,9 +29,6 @@ works and how to act on it. [README.md](README.md) covers the technical side.
 > or even swing trading. Those could be built on the same ideas, but they
 > would be hard to maintain when holdings are spread across many sources
 > (wallets, exchanges, brokers), as they are here.
-
-> This describes the portfolio owner's own strategy, as the app implements
-> it. It is not financial advice.
 
 ---
 
