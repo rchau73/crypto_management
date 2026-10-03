@@ -13,6 +13,7 @@ use crate::usecases::auth_service::AuthService;
 use crate::usecases::history_service::HistoryService;
 use crate::usecases::targets_service::TargetsService;
 use crate::usecases::user_service::UserService;
+use crate::usecases::wallet_export::WalletExportService;
 use crate::usecases::wallet_import::WalletImportService;
 use axum::Router;
 use axum::routing::{get, patch, post, put};
@@ -28,6 +29,7 @@ pub struct AppState {
     pub history: Arc<HistoryService>,
     pub targets: Arc<TargetsService>,
     pub wallet_import: Arc<WalletImportService>,
+    pub wallet_export: Arc<WalletExportService>,
     pub auth: Arc<AuthService>,
     pub users: Arc<UserService>,
     pub cookie_secure: bool,
@@ -49,6 +51,7 @@ impl AppState {
             history: Arc::new(HistoryService::new(repo.clone())),
             targets: Arc::new(TargetsService::new(repo.clone(), repo.clone())),
             wallet_import: Arc::new(WalletImportService::new(repo.clone())),
+            wallet_export: Arc::new(WalletExportService::new(repo.clone(), repo.clone())),
             auth: Arc::new(AuthService::new(
                 repo.clone(),
                 repo.clone(),
@@ -91,6 +94,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/import_wallets/upload",
             post(portfolio::upload_wallet_csv),
         )
+        .route("/api/export_wallets", get(portfolio::export_wallet_csv))
         // One span per request (method, path, status, latency), so every
         // log line inside a handler can be traced back to its request.
         .layer(

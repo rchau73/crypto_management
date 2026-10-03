@@ -2,8 +2,8 @@
 
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
-    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, RefreshToken, TotalHistoryRow, User,
-    WalletPosition,
+    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionSource, RefreshToken, TotalHistoryRow,
+    User, WalletPosition,
 };
 use crate::domain::repository::{
     BarcaTargetRepo, NewUser, PortfolioRepo, RefreshTokenRepo, RepoError, RepoResult, SnapshotRepo,
@@ -11,6 +11,7 @@ use crate::domain::repository::{
 };
 use async_trait::async_trait;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::collections::HashMap;
 
 pub struct SqliteRepo {
     pool: SqlitePool,
@@ -66,6 +67,27 @@ impl PortfolioRepo for SqliteRepo {
                     last_price, notes, source_count \
              FROM wallet_allocations_current \
              ORDER BY symbol, group_name, barca, asset_class",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn fetch_position_sources(&self) -> RepoResult<Vec<PositionSource>> {
+        // Same "latest row per source" rule as the wallet_allocations_current
+        // view (migration 0011), without the SUM.
+        let rows = sqlx::query_as::<_, PositionSource>(
+            "SELECT symbol, group_name, barca, asset_class, \
+                    COALESCE(current_quantity, 0.0) AS current_quantity, notes \
+             FROM ( \
+                 SELECT *, ROW_NUMBER() OVER ( \
+                     PARTITION BY symbol, group_name, barca, asset_class, COALESCE(notes, '') \
+                     ORDER BY created_at DESC, id DESC \
+                 ) AS rn \
+                 FROM wallet_allocations \
+             ) \
+             WHERE rn = 1 \
+             ORDER BY symbol, group_name, barca, asset_class, notes",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -197,8 +219,8 @@ impl SnapshotRepo for SqliteRepo {
             sqlx::query(
                 "INSERT OR IGNORE INTO history_assets \
                  (timestamp, symbol, group_name, barca, price, current_quantity, value, \
-                  target_percent, current_percent) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  target_percent, current_percent, extra) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )
             .bind(ts)
             .bind(&a.symbol)
@@ -209,6 +231,7 @@ impl SnapshotRepo for SqliteRepo {
             .bind(a.value)
             .bind(a.target_percent)
             .bind(a.current_percent)
+            .bind(snapshot.asset_notes.get(&a.symbol))
             .execute(&mut *tx)
             .await?;
         }
@@ -292,6 +315,18 @@ impl SnapshotRepo for SqliteRepo {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows)
+    }
+
+    async fn fetch_latest_prices(&self) -> RepoResult<HashMap<String, f64>> {
+        // Timestamps are RFC 3339 in UTC, so MAX() is the most recent one.
+        let rows: Vec<(String, f64)> = sqlx::query_as(
+            "SELECT symbol, price FROM history_assets \
+             WHERE timestamp = (SELECT MAX(timestamp) FROM history_totals) \
+               AND price IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 }
 
@@ -617,6 +652,32 @@ mod tests {
         assert_eq!(repo.target_of("ETH").await, Some(40.0));
     }
 
+    #[tokio::test]
+    async fn fetch_position_sources_keeps_the_latest_row_of_each_source() {
+        let repo = test_repo().await;
+        repo.append_ledger_entries(&[
+            entry("BTC", 1.0, Some("Ledger")),
+            entry("BTC", 2.0, Some("Binance")),
+            entry("BTC", 3.0, None),
+        ])
+        .await
+        .unwrap();
+        repo.append_ledger_entries(&[entry("BTC", 1.5, Some("Ledger"))])
+            .await
+            .unwrap();
+
+        let sources = repo.fetch_position_sources().await.unwrap();
+
+        let quantities: Vec<_> = sources
+            .iter()
+            .map(|s| (s.notes.as_deref(), s.current_quantity))
+            .collect();
+        assert_eq!(
+            quantities,
+            [(None, 3.0), (Some("Binance"), 2.0), (Some("Ledger"), 1.5)]
+        );
+    }
+
     // --- BARCA targets -----------------------------------------------------
 
     #[tokio::test]
@@ -672,9 +733,17 @@ mod tests {
         repo.record_snapshot(&AllocationSnapshot {
             timestamp: "2026-01-01T00:00:00Z".into(),
             report,
+            asset_notes: HashMap::from([("BTC".to_string(), r#"{"note":1}"#.to_string())]),
         })
         .await
         .unwrap();
+
+        let extra: Option<String> =
+            sqlx::query_scalar("SELECT extra FROM history_assets WHERE symbol = 'BTC'")
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(extra.as_deref(), Some(r#"{"note":1}"#));
 
         let totals = repo.fetch_total_history().await.unwrap();
         assert_eq!(totals.len(), 1);
@@ -682,6 +751,45 @@ mod tests {
         let assets = repo.fetch_asset_history().await.unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].symbol, "BTC");
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_prices_reads_only_the_most_recent_snapshot() {
+        let repo = test_repo().await;
+        assert!(repo.fetch_latest_prices().await.unwrap().is_empty());
+
+        let asset = |symbol: &str, price: f64| AssetAllocation {
+            symbol: symbol.into(),
+            group: "Core".into(),
+            barca: "Base".into(),
+            price,
+            current_quantity: 1.0,
+            value: price,
+            target_percent: 0.0,
+            current_percent: 0.0,
+            deviation: 0.0,
+        };
+        for (timestamp, assets) in [
+            (
+                "2026-01-01T00:00:00+00:00",
+                vec![asset("BTC", 10.0), asset("OLD", 1.0)],
+            ),
+            ("2026-01-02T00:00:00+00:00", vec![asset("BTC", 20.0)]),
+        ] {
+            repo.record_snapshot(&AllocationSnapshot {
+                timestamp: timestamp.into(),
+                report: AllocationReport {
+                    per_asset: assets,
+                    ..Default::default()
+                },
+                asset_notes: HashMap::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let prices = repo.fetch_latest_prices().await.unwrap();
+        assert_eq!(prices, HashMap::from([("BTC".to_string(), 20.0)]));
     }
 
     // --- users -------------------------------------------------------------

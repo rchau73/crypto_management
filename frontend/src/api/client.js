@@ -80,6 +80,20 @@ export async function uploadWalletCsv(file) {
   return parseJsonOrThrow(res, "Import failed");
 }
 
+// Downloads the wallet in the import format (one line per source, plus
+// price_usd/value_usd). Manager+ only, enforced server-side. Returns the
+// file as a Blob with the server-suggested filename.
+export async function downloadWalletCsv() {
+  const res = await apiFetch("/api/export_wallets");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || "Export failed");
+  }
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "wallet_allocations.csv";
+  return { blob: await res.blob(), filename };
+}
+
 export async function login(username, password) {
   const res = await postJson("/api/auth/login", { username, password });
   return parseJsonOrThrow(res, "Invalid username or password");

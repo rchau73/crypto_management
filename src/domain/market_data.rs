@@ -1,7 +1,7 @@
 //! Market-data "ports". Each adapter in `infra` is built with its own API
 //! key, so callers only ask for prices and never handle credentials.
 
-use crate::domain::models::MarketQuote;
+use crate::domain::models::{FxRate, MarketQuote};
 use async_trait::async_trait;
 
 pub type MarketDataResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -19,6 +19,13 @@ pub trait CryptoProvider: Send + Sync {
 #[async_trait]
 pub trait EquityProvider: Send + Sync {
     async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>>;
+}
+
+/// The USD/BRL exchange rate used to convert Brazilian quotes to dollars
+/// (the Banco Central's PTAX selling rate).
+#[async_trait]
+pub trait FxProvider: Send + Sync {
+    async fn fetch_usd_brl(&self) -> MarketDataResult<FxRate>;
 }
 
 /// Test double for both provider traits: always returns the same quotes,
@@ -77,5 +84,23 @@ impl CryptoProvider for FakeProvider {
 impl EquityProvider for FakeProvider {
     async fn fetch_quotes(&self, _symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
         self.result()
+    }
+}
+
+/// Test double for `FxProvider`: a fixed rate, or always fails.
+#[cfg(test)]
+pub struct FakeFx(pub Option<f64>);
+
+#[cfg(test)]
+#[async_trait]
+impl FxProvider for FakeFx {
+    async fn fetch_usd_brl(&self) -> MarketDataResult<FxRate> {
+        match self.0 {
+            Some(brl_per_usd) => Ok(FxRate {
+                brl_per_usd,
+                quoted_at: "2026-10-01 13:10:35".to_string(),
+            }),
+            None => Err("PTAX is down".into()),
+        }
     }
 }

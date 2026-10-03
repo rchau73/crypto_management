@@ -94,6 +94,7 @@ mod tests {
                 }],
                 ..Default::default()
             },
+            asset_notes: Default::default(),
         })
         .await
         .unwrap();

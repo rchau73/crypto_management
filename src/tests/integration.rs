@@ -3,7 +3,7 @@
 
 use crate::api::{AppState, build_router};
 use crate::config::AppConfig;
-use crate::domain::market_data::FakeProvider;
+use crate::domain::market_data::{FakeFx, FakeProvider};
 use crate::domain::models::{LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionKey};
 use crate::domain::repository::{BarcaTargetRepo, NewUser, PortfolioRepo, UserRepo};
 use crate::infra::sqlite::test_repo;
@@ -91,6 +91,7 @@ async fn test_app(crypto: FakeProvider) -> Router {
         crypto: Arc::new(crypto),
         br_equities: Arc::new(FakeProvider::empty()),
         us_indices: Arc::new(FakeProvider::empty()),
+        usd_brl: Arc::new(FakeFx(Some(5.0))),
     };
     build_router(AppState::new(repo, providers, &AppConfig::for_tests()))
 }
@@ -466,6 +467,44 @@ async fn bad_csv_uploads_are_400s_with_a_useful_message() {
         let message = body["error"].as_str().unwrap();
         assert!(message.contains(expected), "{message}");
     }
+}
+
+#[tokio::test]
+async fn wallet_export_needs_manager_and_downloads_the_import_format() {
+    let app = default_app().await;
+    let (status, _) = send(&app, get("/api/export_wallets", "")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let viewer = login(&app, "viewer").await;
+    let (status, _) = send(&app, get("/api/export_wallets", &viewer)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let manager = login(&app, "manager").await;
+    send(&app, get("/api/allocations", &manager)).await; // record prices
+    let response = app
+        .clone()
+        .oneshot(get("/api/export_wallets", &manager))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(headers[CONTENT_TYPE], "text/csv; charset=utf-8");
+    let disposition = headers["content-disposition"].to_str().unwrap();
+    assert!(disposition.starts_with("attachment; filename=\"wallet_allocations-"));
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let csv = String::from_utf8(bytes.to_vec()).unwrap();
+    let mut lines = csv.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            "symbol,group,barca,target_percent,current_quantity,comments,asset_class,price_usd,value_usd"
+        )
+    );
+    assert!(
+        csv.lines()
+            .any(|l| l.starts_with("BTC,") && l.contains(",10,")),
+        "{csv}"
+    );
 }
 
 // --- user administration ------------------------------------------------------

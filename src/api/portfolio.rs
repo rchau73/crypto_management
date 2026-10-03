@@ -1,4 +1,5 @@
-//! Portfolio endpoints: live allocations, history, targets and CSV upload.
+//! Portfolio endpoints: live allocations, history, targets and CSV
+//! upload/download.
 
 use crate::api::AppState;
 use crate::api::auth::CurrentUser;
@@ -8,6 +9,7 @@ use crate::usecases::history_service::HistoryLevel;
 use crate::usecases::targets_service::{QuantityCorrection, TargetRow};
 use axum::Json;
 use axum::extract::{Multipart, Query, State};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
@@ -163,4 +165,32 @@ pub async fn upload_wallet_csv(
     let imported = state.wallet_import.import_csv(csv.as_slice()).await?;
     info!(imported, bytes = csv.len(), "Imported wallet CSV upload");
     Ok(Json(json!({ "imported": imported })))
+}
+
+/// "Export Wallet CSV": the wallet in the import format, as a download.
+#[tracing::instrument(skip_all, fields(user_id = current.user_id))]
+pub async fn export_wallet_csv(
+    current: CurrentUser,
+    State(state): State<AppState>,
+) -> ApiResult<([(axum::http::HeaderName, String); 2], String)> {
+    current.require(Role::Manager)?;
+    let csv = state
+        .wallet_export
+        .export_csv()
+        .await
+        .map_err(ApiError::internal)?;
+    let filename = format!(
+        "wallet_allocations-{}.csv",
+        chrono::Utc::now().format("%Y-%m-%d")
+    );
+    Ok((
+        [
+            (CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        csv,
+    ))
 }

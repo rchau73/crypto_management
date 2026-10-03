@@ -1,10 +1,11 @@
 import { useRef } from "react";
 import { Button, CircularProgress, Stack } from "@mui/material";
 
-// "Update Prices" / "Import Wallet CSV" — the two actions that mutate app
-// state. Status text (last update, import result) lives in StatusLine, not
+// "Update Prices" / "Import Wallet CSV" / "Export Wallet CSV". Export
+// downloads the wallet in the same format Import reads, for reports outside
+// the app. Status text (last update, import result) lives in StatusLine, not
 // here, so this stays a plain toolbar-friendly button row. Importing a CSV
-// is a Manager+ action on the backend, so it's hidden (not just disabled)
+// (and exporting) is a Manager+ action on the backend, so it's hidden (not just disabled)
 // for a plain User — hiding it makes the permission boundary visible instead
 // of showing an action that would just 403.
 //
@@ -13,7 +14,7 @@ import { Button, CircularProgress, Stack } from "@mui/material";
 // picks one, and the file's actual bytes are uploaded — no assumption that
 // the backend can read a path from its own filesystem, which doesn't hold
 // once the backend is a container/serverless deploy you can't shell into.
-export function ActionsBar({ loading, onRefresh, importing, onImport, canImport }) {
+export function ActionsBar({ loading, onRefresh, importing, onImport, exporting, onExport, canImport }) {
   const fileInputRef = useRef(null);
 
   const handleFileChosen = (e) => {
@@ -43,6 +44,9 @@ export function ActionsBar({ loading, onRefresh, importing, onImport, canImport 
             disabled={importing}
           >
             {importing ? <CircularProgress size={20} color="inherit" /> : "Import Wallet CSV"}
+          </Button>
+          <Button variant="outlined" color="secondary" onClick={onExport} disabled={exporting}>
+            {exporting ? <CircularProgress size={20} color="inherit" /> : "Export Wallet CSV"}
           </Button>
         </>
       )}
