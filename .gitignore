@@ -9,3 +9,10 @@ wallet_allocations*.*
 server.log
 server.pid
 .DS_Store
+
+# Personal portfolio data: never commit (purged from history 2026-10-03)
+history_*.csv
+wallet_allocations*.csv
+walletbackup.csv
+wbkp
+server.pid
