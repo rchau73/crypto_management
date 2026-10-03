@@ -4,6 +4,11 @@
 //! The database wins over the CSV: a (symbol, group, barca, asset_class)
 //! that already exists is skipped, never overwritten. Only new positions
 //! are added, each with its starting quantity and target.
+//!
+//! A position may span several lines, one per funding source (the `notes`
+//! / `comments` column: "Binance", "Ledger Wallet"...). Each source becomes
+//! its own ledger row, and the position's target is the sum of its lines'
+//! targets (the wallet CSV puts it on one line and 0 on the others).
 
 use crate::domain::models::{LedgerEntry, NewPortfolioTarget, PositionKey};
 use crate::domain::repository::{PortfolioRepo, RepoError};
@@ -122,9 +127,18 @@ impl WalletCsvRow {
     }
 }
 
-/// Reads and validates every row. Returns rows keyed by position; if the
-/// same key appears more than once, the last line wins.
-fn parse_rows(reader: impl Read) -> Result<BTreeMap<PositionKey, WalletCsvRow>, ImportError> {
+/// One position from the CSV: its target and one row per source.
+#[derive(Debug)]
+struct CsvPosition {
+    target_percent: f64,
+    sources: Vec<WalletCsvRow>,
+}
+
+/// Reads and validates every row, grouped by position. Within a position,
+/// a repeated source (same `notes`, including no notes) keeps only its last
+/// line — so a time-series export with the same key on every line imports
+/// once instead of once per line.
+fn parse_rows(reader: impl Read) -> Result<BTreeMap<PositionKey, CsvPosition>, ImportError> {
     let mut csv_reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
         .flexible(true)
@@ -137,7 +151,7 @@ fn parse_rows(reader: impl Read) -> Result<BTreeMap<PositionKey, WalletCsvRow>, 
         });
     }
 
-    let mut rows = BTreeMap::new();
+    let mut sources: BTreeMap<(PositionKey, Option<String>), WalletCsvRow> = BTreeMap::new();
     let mut errors = Vec::new();
     for record in csv_reader.records() {
         let record = record?;
@@ -145,7 +159,7 @@ fn parse_rows(reader: impl Read) -> Result<BTreeMap<PositionKey, WalletCsvRow>, 
         let row: WalletCsvRow = record.deserialize(Some(&headers))?;
         match row.validate() {
             Ok(()) => {
-                rows.insert(row.key(), row);
+                sources.insert((row.key(), row.notes.clone()), row);
             }
             Err(message) => errors.push(format!("line {line}: {message}")),
         }
@@ -153,7 +167,31 @@ fn parse_rows(reader: impl Read) -> Result<BTreeMap<PositionKey, WalletCsvRow>, 
     if !errors.is_empty() {
         return Err(ImportError::InvalidRows(errors));
     }
-    Ok(rows)
+
+    let mut positions: BTreeMap<PositionKey, CsvPosition> = BTreeMap::new();
+    for ((key, _notes), row) in sources {
+        let position = positions.entry(key).or_insert(CsvPosition {
+            target_percent: 0.0,
+            sources: Vec::new(),
+        });
+        position.target_percent += row.target_percent.unwrap_or(0.0);
+        position.sources.push(row);
+    }
+    let errors: Vec<String> = positions
+        .iter()
+        .filter_map(|(key, position)| {
+            check_percent(position.target_percent).err().map(|message| {
+                format!(
+                    "{} ({}/{}): summed {message}",
+                    key.symbol, key.group_name, key.barca
+                )
+            })
+        })
+        .collect();
+    if !errors.is_empty() {
+        return Err(ImportError::InvalidRows(errors));
+    }
+    Ok(positions)
 }
 
 pub struct WalletImportService {
@@ -166,9 +204,10 @@ impl WalletImportService {
     }
 
     /// Imports the positions in `reader` that don't exist yet. Returns how
-    /// many were added. All-or-nothing: a bad row means nothing is written.
+    /// many positions were added. All-or-nothing: a bad row means nothing
+    /// is written.
     pub async fn import_csv(&self, reader: impl Read) -> Result<usize, ImportError> {
-        let rows = parse_rows(reader)?;
+        let positions = parse_rows(reader)?;
 
         let existing: HashSet<PositionKey> = self
             .portfolio
@@ -180,29 +219,36 @@ impl WalletImportService {
 
         let mut targets = Vec::new();
         let mut entries = Vec::new();
-        for (key, row) in rows {
+        for (key, position) in positions {
             if existing.contains(&key) {
                 continue; // the database wins over the CSV
             }
             targets.push(NewPortfolioTarget {
                 key: key.clone(),
-                target_percent: row.target_percent.unwrap_or(0.0),
+                target_percent: position.target_percent,
             });
-            entries.push(LedgerEntry {
-                symbol: key.symbol,
-                group_name: row.group,
-                barca: row.barca,
-                asset_class: key.asset_class,
-                current_quantity: row.current_quantity.unwrap_or(0.0),
-                last_price: row.last_price,
-                notes: row.notes,
-            });
+            for row in position.sources {
+                entries.push(LedgerEntry {
+                    symbol: key.symbol.clone(),
+                    group_name: row.group,
+                    barca: row.barca,
+                    asset_class: key.asset_class.clone(),
+                    current_quantity: row.current_quantity.unwrap_or(0.0),
+                    last_price: row.last_price,
+                    notes: row.notes,
+                });
+            }
         }
 
         if !entries.is_empty() {
             self.portfolio.import_positions(&targets, &entries).await?;
         }
-        Ok(entries.len())
+        tracing::info!(
+            positions = targets.len(),
+            ledger_rows = entries.len(),
+            "Imported wallet positions"
+        );
+        Ok(targets.len())
     }
 
     pub async fn import_csv_file(&self, path: &str) -> Result<usize, ImportError> {
@@ -251,14 +297,63 @@ mod tests {
     #[tokio::test]
     async fn a_repeated_key_is_imported_once() {
         // Regression: pointing the importer at a time-series export (same
-        // key on every line) used to insert one ledger row per line.
+        // key on every line, no notes column) used to insert one ledger row
+        // per line.
         let (repo, service) = setup().await;
-        let csv = format!(
-            "{HEADER}BTC,Core,Base,10,1.0,t1,crypto\nBTC,Core,Base,10,1.0,t2,crypto\nBTC,Core,Base,10,1.0,t3,crypto\n"
-        );
+        let csv = "timestamp,symbol,group,barca,current_quantity\n\
+                   t1,BTC,Core,Base,1.0\nt2,BTC,Core,Base,1.0\nt3,BTC,Core,Base,1.0\n";
 
         assert_eq!(service.import_csv(csv.as_bytes()).await.unwrap(), 1);
         assert_eq!(repo.count_ledger_rows("BTC").await, 1);
+    }
+
+    #[tokio::test]
+    async fn each_source_of_a_position_becomes_its_own_ledger_row() {
+        // Regression: only the last line of a multi-source position used to
+        // be imported (USDT on Binance + GateIO kept only GateIO).
+        let (repo, service) = setup().await;
+        let csv = "symbol,group,barca,target_percent,current_quantity,comments,asset_class\n\
+                   USDT,Core,Base,30,100,Binance,crypto\n\
+                   USDT,Core,Base,0,50,GateIO,crypto\n\
+                   USDT,Core,Base,0,7,,crypto\n";
+
+        assert_eq!(service.import_csv(csv.as_bytes()).await.unwrap(), 1);
+
+        let positions = repo.fetch_positions().await.unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].current_quantity, 157.0);
+        assert_eq!(positions[0].source_count, 3);
+        assert_eq!(
+            positions[0].target_percent, 30.0,
+            "target is not lost to a later 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_source_twice_keeps_its_last_line() {
+        let (repo, service) = setup().await;
+        let csv = format!(
+            "{HEADER}BTC,Core,Base,10,1.0,Ledger,crypto\nBTC,Core,Base,10,2.0,Ledger,crypto\n"
+        );
+
+        service.import_csv(csv.as_bytes()).await.unwrap();
+
+        assert_eq!(repo.count_ledger_rows("BTC").await, 1);
+        assert_eq!(
+            repo.fetch_positions().await.unwrap()[0].current_quantity,
+            2.0
+        );
+    }
+
+    #[tokio::test]
+    async fn targets_summed_over_100_are_rejected() {
+        let (repo, service) = setup().await;
+        let csv = format!("{HEADER}BTC,Core,Base,60,1.0,A,crypto\nBTC,Core,Base,60,1.0,B,crypto\n");
+
+        let err = service.import_csv(csv.as_bytes()).await.unwrap_err();
+
+        assert!(matches!(err, ImportError::InvalidRows(_)), "{err:?}");
+        assert!(repo.fetch_positions().await.unwrap().is_empty());
     }
 
     #[tokio::test]
