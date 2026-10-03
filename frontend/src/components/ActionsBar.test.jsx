@@ -45,6 +45,31 @@ describe("ActionsBar", () => {
     expect(screen.queryByText("Update Prices")).not.toBeInTheDocument();
   });
 
+  it("hides Export Wallet CSV for a role that can't export", () => {
+    render(<ActionsBar loading={false} onRefresh={vi.fn()} importing={false} onImport={vi.fn()} canImport={false} />);
+    expect(screen.queryByRole("button", { name: "Export Wallet CSV" })).not.toBeInTheDocument();
+  });
+
+  it("calls onExport when Export Wallet CSV is clicked", async () => {
+    const user = userEvent.setup();
+    const onExport = vi.fn();
+    render(
+      <ActionsBar loading={false} onRefresh={vi.fn()} importing={false} onImport={vi.fn()} exporting={false} onExport={onExport} canImport={true} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Export Wallet CSV" }));
+
+    expect(onExport).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Export Wallet CSV while an export is in flight", () => {
+    render(
+      <ActionsBar loading={false} onRefresh={vi.fn()} importing={false} onImport={vi.fn()} exporting={true} onExport={vi.fn()} canImport={true} />
+    );
+    // Update Prices, Import, Export — the export button is the third.
+    expect(screen.getAllByRole("button")[2]).toBeDisabled();
+  });
+
   it("disables Import Wallet CSV while an import is in flight", () => {
     render(<ActionsBar loading={false} onRefresh={vi.fn()} importing={true} onImport={vi.fn()} canImport={true} />);
     // Two buttons render (Update Prices + Import Wallet CSV); the second is disabled and shows a spinner.

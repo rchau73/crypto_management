@@ -59,11 +59,13 @@ function Dashboard({ user, onLogout }) {
     loading,
     loadError,
     importing,
+    exporting,
     importStatus,
     importError,
     lastUpdate,
     refresh,
     importFromCsv,
+    exportToCsv,
   } = useAllocations();
 
   const [assetFilter, setAssetFilter] = useState("");
@@ -110,6 +112,8 @@ function Dashboard({ user, onLogout }) {
         onRefresh={refresh}
         importing={importing}
         onImport={importFromCsv}
+        exporting={exporting}
+        onExport={exportToCsv}
         canImport={canImport}
         username={user.username}
         role={user.role}

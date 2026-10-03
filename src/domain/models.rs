@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Market data
@@ -17,6 +18,17 @@ use sqlx::FromRow;
 pub struct MarketQuote {
     pub symbol: String,
     pub price: f64,
+}
+
+/// How many reais one US dollar costs, per the Banco Central's PTAX
+/// (selling rate, "cotação de venda"). Brazilian quotes arrive in BRL and
+/// the portfolio is managed in USD, so they are divided by this.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FxRate {
+    pub brl_per_usd: f64,
+    /// When the Banco Central published this rate (`YYYY-MM-DD HH:MM:SS`,
+    /// Brasília time) — a weekend refresh uses Friday's rate.
+    pub quoted_at: String,
 }
 
 /// Which market an asset belongs to — decides which provider prices it.
@@ -105,6 +117,19 @@ impl WalletPosition {
             asset_class: self.asset_class.clone(),
         }
     }
+}
+
+/// The latest ledger row of one funding source of a position (same key +
+/// same `notes`) — what `wallet_allocations_current` sums per position.
+/// Used to export the wallet one line per source, like the wallet CSV.
+#[derive(Debug, Clone, FromRow, PartialEq)]
+pub struct PositionSource {
+    pub symbol: String,
+    pub group_name: Option<String>,
+    pub barca: Option<String>,
+    pub asset_class: String,
+    pub current_quantity: f64,
+    pub notes: Option<String>,
 }
 
 /// A target percent for one position key (the `portfolio_targets` table).
@@ -199,6 +224,9 @@ pub struct AllocationReport {
 pub struct AllocationSnapshot {
     pub timestamp: String, // RFC 3339
     pub report: AllocationReport,
+    /// Optional per-symbol audit note (JSON) stored in `history_assets.extra`,
+    /// e.g. the original BRL price and the PTAX used to convert it.
+    pub asset_notes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

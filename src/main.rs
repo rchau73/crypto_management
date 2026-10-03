@@ -5,6 +5,7 @@ use anyhow::Context;
 use axum::http::{HeaderValue, Method, header};
 use crypto_management::api::{AppState, build_router};
 use crypto_management::config::AppConfig;
+use crypto_management::infra::bcb_ptax::BcbPtaxProvider;
 use crypto_management::infra::brapi::BrapiProvider;
 use crypto_management::infra::coinmarketcap::CoinMarketCapProvider;
 use crypto_management::infra::finnhub::FinnhubProvider;
@@ -38,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         )),
         br_equities: Arc::new(BrapiProvider::new(config.brapi_api_key.clone())),
         us_indices: Arc::new(FinnhubProvider::new(config.finnhub_api_key.clone())),
+        usd_brl: Arc::new(BcbPtaxProvider::new()),
     };
     let state = AppState::new(Arc::new(SqliteRepo::new(pool)), providers, &config);
 

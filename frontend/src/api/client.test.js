@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchAllocations, fetchCurrentUser, login, uploadWalletCsv } from "./client";
+import { downloadWalletCsv, fetchAllocations, fetchCurrentUser, login, uploadWalletCsv } from "./client";
 
 function jsonResponse(status, body) {
   return {
@@ -93,5 +93,31 @@ describe("apiFetch (via fetchAllocations)", () => {
     expect(options.body.get("file")).toBe(file);
     // No explicit Content-Type — the browser must set multipart's boundary itself.
     expect(options.headers).toBeUndefined();
+  });
+
+  it("downloadWalletCsv returns the file and the server's filename", async () => {
+    const blob = new Blob(["symbol\nBTC\n"], { type: "text/csv" });
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Disposition": 'attachment; filename="wallet_allocations-2026-10-02.csv"' }),
+      blob: async () => blob,
+    });
+
+    const result = await downloadWalletCsv();
+
+    expect(fetch.mock.calls[0][0]).toContain("/api/export_wallets");
+    expect(result).toEqual({ blob, filename: "wallet_allocations-2026-10-02.csv" });
+  });
+
+  it("downloadWalletCsv falls back to a default filename without Content-Disposition", async () => {
+    fetch.mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), blob: async () => new Blob([]) });
+    const { filename } = await downloadWalletCsv();
+    expect(filename).toBe("wallet_allocations.csv");
+  });
+
+  it("downloadWalletCsv surfaces the server's error message", async () => {
+    fetch.mockResolvedValueOnce(jsonResponse(403, { error: "forbidden" }));
+    await expect(downloadWalletCsv()).rejects.toThrow("forbidden");
   });
 });

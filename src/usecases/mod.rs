@@ -5,4 +5,5 @@ pub mod history_service;
 pub mod targets_service;
 pub mod user_service;
 pub mod validation;
+pub mod wallet_export;
 pub mod wallet_import;

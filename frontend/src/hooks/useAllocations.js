@@ -1,8 +1,11 @@
 import { useState } from "react";
-import { fetchAllocations, uploadWalletCsv } from "../api/client";
+import { downloadWalletCsv, fetchAllocations, uploadWalletCsv } from "../api/client";
+import { saveFile } from "../utils/saveFile";
 
 // Owns the "live allocations" data: the per-asset/per-group/per-BARCA
-// breakdown from /api/allocations, plus the CSV import action that feeds it.
+// breakdown from /api/allocations, plus the CSV import/export actions.
+// Import and export share one status/error pair, since StatusLine shows
+// the outcome of whichever wallet-file action ran last.
 export function useAllocations() {
   const [allocations, setAllocations] = useState([]);
   const [groupAllocations, setGroupAllocations] = useState([]);
@@ -11,6 +14,7 @@ export function useAllocations() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -49,6 +53,21 @@ export function useAllocations() {
     }
   };
 
+  const exportToCsv = async () => {
+    setExporting(true);
+    setImportStatus("");
+    setImportError("");
+    try {
+      const { blob, filename } = await downloadWalletCsv();
+      saveFile(blob, filename);
+      setImportStatus(`Exported ${filename}`);
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return {
     allocations,
     groupAllocations,
@@ -57,10 +76,12 @@ export function useAllocations() {
     loading,
     loadError,
     importing,
+    exporting,
     importStatus,
     importError,
     lastUpdate,
     refresh,
     importFromCsv,
+    exportToCsv,
   };
 }

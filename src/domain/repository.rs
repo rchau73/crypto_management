@@ -4,10 +4,11 @@
 
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
-    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, RefreshToken, TotalHistoryRow, User,
-    WalletPosition,
+    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionSource, RefreshToken, TotalHistoryRow,
+    User, WalletPosition,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::fmt;
 
 pub type RepoError = Box<dyn std::error::Error + Send + Sync>;
@@ -37,6 +38,10 @@ impl std::error::Error for UniqueViolation {}
 pub trait PortfolioRepo: Send + Sync {
     /// One row per position key (the `wallet_allocations_current` view).
     async fn fetch_positions(&self) -> RepoResult<Vec<WalletPosition>>;
+
+    /// The latest ledger row of every source, i.e. `fetch_positions`
+    /// before the sources are summed.
+    async fn fetch_position_sources(&self) -> RepoResult<Vec<PositionSource>>;
 
     /// Appends ledger rows in one transaction (all or nothing).
     async fn append_ledger_entries(&self, entries: &[LedgerEntry]) -> RepoResult<()>;
@@ -88,6 +93,10 @@ pub trait SnapshotRepo: Send + Sync {
     async fn fetch_group_history(&self) -> RepoResult<Vec<GroupHistoryRow>>;
     async fn fetch_barca_history(&self) -> RepoResult<Vec<BarcaHistoryRow>>;
     async fn fetch_total_history(&self) -> RepoResult<Vec<TotalHistoryRow>>;
+
+    /// Price (USD) of every symbol in the most recent snapshot. Empty if
+    /// prices were never updated.
+    async fn fetch_latest_prices(&self) -> RepoResult<HashMap<String, f64>>;
 }
 
 pub struct NewUser<'a> {
