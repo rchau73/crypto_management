@@ -57,12 +57,15 @@ function Dashboard({ user, onLogout }) {
     barcaAllocations,
     barcaActualAllocations,
     loading,
+    loadError,
     importing,
+    exporting,
     importStatus,
     importError,
     lastUpdate,
     refresh,
     importFromCsv,
+    exportToCsv,
   } = useAllocations();
 
   const [assetFilter, setAssetFilter] = useState("");
@@ -109,6 +112,8 @@ function Dashboard({ user, onLogout }) {
         onRefresh={refresh}
         importing={importing}
         onImport={importFromCsv}
+        exporting={exporting}
+        onExport={exportToCsv}
         canImport={canImport}
         username={user.username}
         role={user.role}
@@ -118,7 +123,7 @@ function Dashboard({ user, onLogout }) {
 
       <Container maxWidth="xl" sx={{ py: 3 }}>
         <StatTiles totalWalletValue={totalWalletValue} />
-        <StatusLine lastUpdate={lastUpdate} importStatus={importStatus} importError={importError} />
+        <StatusLine lastUpdate={lastUpdate} importStatus={importStatus} importError={importError || loadError} />
 
         {hasData && DATA_TAB_KEYS.has(activeKey) && (
           <FiltersBar
@@ -167,12 +172,11 @@ function Dashboard({ user, onLogout }) {
         {activeKey === "barca-actual" && hasData && (
           <BarcaActualTab barcaAllocations={barcaAllocations} barcaActualAllocations={barcaActualAllocations} />
         )}
-        {activeKey === "dashboard" && <DashboardTab active={activeKey === "dashboard"} />}
-        {canImport && activeKey === "portfolio-targets" && (
-          <PortfolioTargetsTab active={activeKey === "portfolio-targets"} />
-        )}
-        {canImport && activeKey === "barca-targets" && <BarcaTargetsTab active={activeKey === "barca-targets"} />}
-        {isAdmin && activeKey === "admin" && <AdminTab active={activeKey === "admin"} currentUsername={user.username} />}
+        {/* Each tab below is only mounted while selected, so it fetches its own data on mount. */}
+        {activeKey === "dashboard" && <DashboardTab />}
+        {canImport && activeKey === "portfolio-targets" && <PortfolioTargetsTab />}
+        {canImport && activeKey === "barca-targets" && <BarcaTargetsTab />}
+        {isAdmin && activeKey === "admin" && <AdminTab currentUsername={user.username} />}
       </Container>
     </>
   );

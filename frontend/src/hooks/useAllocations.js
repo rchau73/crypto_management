@@ -1,21 +1,27 @@
 import { useState } from "react";
-import { fetchAllocations, uploadWalletCsv } from "../api/client";
+import { downloadWalletCsv, fetchAllocations, uploadWalletCsv } from "../api/client";
+import { saveFile } from "../utils/saveFile";
 
 // Owns the "live allocations" data: the per-asset/per-group/per-BARCA
-// breakdown from /api/allocations, plus the CSV import action that feeds it.
+// breakdown from /api/allocations, plus the CSV import/export actions.
+// Import and export share one status/error pair, since StatusLine shows
+// the outcome of whichever wallet-file action ran last.
 export function useAllocations() {
   const [allocations, setAllocations] = useState([]);
   const [groupAllocations, setGroupAllocations] = useState([]);
   const [barcaAllocations, setBarcaAllocations] = useState([]);
   const [barcaActualAllocations, setBarcaActualAllocations] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
   const [lastUpdate, setLastUpdate] = useState(null);
 
   const refresh = async () => {
     setLoading(true);
+    setLoadError("");
     try {
       const data = await fetchAllocations();
       setAllocations(data.per_asset || []);
@@ -24,9 +30,11 @@ export function useAllocations() {
       setBarcaActualAllocations(data.per_barca_actual || []);
       setLastUpdate(new Date());
     } catch (err) {
-      alert("Failed to fetch allocations: " + err.message);
+      // Shown inline by StatusLine (alert() would block the page).
+      setLoadError("Failed to fetch allocations: " + err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const importFromCsv = async (file) => {
@@ -38,12 +46,26 @@ export function useAllocations() {
       setImportStatus(`Imported ${data.imported ?? 0} wallet rows from CSV`);
       await refresh();
     } catch (err) {
-      // The backend tells apart "you uploaded a bad file" (400, message is
-      // already written for a human) from a real server failure — either
-      // way, show it inline instead of an alert() that blocks the page.
+      // A bad file comes back as a 400 whose message is written for a human.
       setImportError(err.message);
+    } finally {
+      setImporting(false);
     }
-    setImporting(false);
+  };
+
+  const exportToCsv = async () => {
+    setExporting(true);
+    setImportStatus("");
+    setImportError("");
+    try {
+      const { blob, filename } = await downloadWalletCsv();
+      saveFile(blob, filename);
+      setImportStatus(`Exported ${filename}`);
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return {
@@ -52,11 +74,14 @@ export function useAllocations() {
     barcaAllocations,
     barcaActualAllocations,
     loading,
+    loadError,
     importing,
+    exporting,
     importStatus,
     importError,
     lastUpdate,
     refresh,
     importFromCsv,
+    exportToCsv,
   };
 }

@@ -1,121 +1,239 @@
+//! Plain data shared by every layer. No I/O and no business rules live
+//! here — just the shapes of things, plus tiny parse/format helpers for the
+//! two enums.
+
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::HashMap;
 
-/// A single asset's current market data, as needed by the allocation use
-/// case — crypto, Brazilian B3/FIIs, or a US index, whichever `AssetClass`
-/// it belongs to. Deliberately independent of any external API's wire
-/// format — `infra::coinmarketcap`/`infra::brapi`/`infra::finnhub` each map
-/// their own provider's response shape into this. `market_cap`/`fdv`/
-/// `volume_24h`/`percent_change_*` are CoinMarketCap-specific extras with no
-/// equivalent from brapi/Finnhub's quote endpoints, so non-crypto providers
-/// just leave them at 0.0 — nothing downstream (`compute_allocations`)
-/// reads them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// ---------------------------------------------------------------------------
+// Market data
+// ---------------------------------------------------------------------------
+
+/// The current price of one asset, whichever provider it came from
+/// (CoinMarketCap, brapi or Finnhub). Each `infra` adapter maps its own
+/// wire format into this, so nothing past the adapter knows which API
+/// answered.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MarketQuote {
     pub symbol: String,
     pub price: f64,
-    pub market_cap: f64,
-    pub fdv: f64,
-    pub volume_24h: f64,
-    pub percent_change_24h: f64,
-    pub percent_change_7d: f64,
 }
 
-// Asset snapshot row (history_assets)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct AssetSnapshot {
-    pub id: Option<i64>,
-    pub timestamp: String, // ISO8601
+/// How many reais one US dollar costs, per the Banco Central's PTAX
+/// (selling rate, "cotação de venda"). Brazilian quotes arrive in BRL and
+/// the portfolio is managed in USD, so they are divided by this.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FxRate {
+    pub brl_per_usd: f64,
+    /// When the Banco Central published this rate (`YYYY-MM-DD HH:MM:SS`,
+    /// Brasília time) — a weekend refresh uses Friday's rate.
+    pub quoted_at: String,
+}
+
+/// Which market an asset belongs to — decides which provider prices it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AssetClass {
+    Crypto,
+    BrEquities,
+    UsIndices,
+}
+
+impl AssetClass {
+    pub fn parse(s: &str) -> Option<AssetClass> {
+        match s {
+            "crypto" => Some(AssetClass::Crypto),
+            "br-equities" => Some(AssetClass::BrEquities),
+            "us-indices" => Some(AssetClass::UsIndices),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AssetClass::Crypto => "crypto",
+            AssetClass::BrEquities => "br-equities",
+            AssetClass::UsIndices => "us-indices",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio: the append-only ledger and the positions derived from it
+// ---------------------------------------------------------------------------
+
+/// Identifies one displayed portfolio row. Missing group/barca are stored
+/// as NULL in the ledger but compared as "" everywhere, matching the
+/// `COALESCE(..., '')` in the `wallet_allocations_current` view.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PositionKey {
     pub symbol: String,
-    pub group_name: Option<String>,
-    pub barca: Option<String>,
-    pub price: Option<f64>,
-    pub current_quantity: Option<f64>,
-    pub value: Option<f64>,
-    pub target_percent: Option<f64>,
-    pub current_percent: Option<f64>,
-    pub market_cap: Option<f64>,
-    pub fdv: Option<f64>,
-    pub volume_24h: Option<f64>,
-    pub percent_change_24h: Option<f64>,
-    pub percent_change_7d: Option<f64>,
-    pub extra: Option<serde_json::Value>,
-    pub created_at: Option<String>,
-}
-
-// BARCA snapshot row (history_barca)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct BarcaSnapshot {
-    pub id: Option<i64>,
-    pub timestamp: String,
-    pub barca: String,
-    pub value: Option<f64>,
-    pub current_percent: Option<f64>,
-    pub target_percent: Option<f64>,
-    pub extra: Option<serde_json::Value>,
-    pub created_at: Option<String>,
-}
-
-// Group snapshot row (history_groups)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct GroupSnapshot {
-    pub id: Option<i64>,
-    pub timestamp: String,
     pub group_name: String,
-    pub value: Option<f64>,
-    pub current_percent: Option<f64>,
-    pub target_percent: Option<f64>,
-    pub extra: Option<serde_json::Value>,
-    pub created_at: Option<String>,
+    pub barca: String,
+    pub asset_class: String,
 }
 
-// Totals snapshot row (history_totals)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct TotalSnapshot {
-    pub id: Option<i64>,
-    pub timestamp: String,
-    pub total_value: Option<f64>,
-    pub extra: Option<serde_json::Value>,
-    pub created_at: Option<String>,
-}
-
-// Wallet allocation ledger (append-only) row (wallet_allocations)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct WalletAllocation {
-    pub id: Option<i64>,
+/// One row written to the append-only `wallet_allocations` ledger. Rows are
+/// never updated or deleted: a newer row for the same source (same key +
+/// same `notes`) supersedes the older one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerEntry {
     pub symbol: String,
     pub group_name: Option<String>,
     pub barca: Option<String>,
-    pub target_percent: Option<f64>,
-    pub current_quantity: Option<f64>,
-    pub last_price: Option<f64>,
-    pub notes: Option<String>,
-    // "crypto" | "br-equities" | "us-indices" — see AssetClass. Defaults to
-    // "crypto" both at the DB level (existing rows didn't need a backfill
-    // script) and here (a CSV row / API payload that omits it is assumed crypto).
-    #[serde(default = "default_asset_class")]
     pub asset_class: String,
-    pub created_at: Option<String>,
+    pub current_quantity: f64,
+    pub last_price: Option<f64>,
+    /// Names the funding source (wallet, exchange, broker...). Each distinct
+    /// value is a separate source whose quantity is added to the others.
+    pub notes: Option<String>,
 }
 
-fn default_asset_class() -> String {
-    AssetClass::Crypto.as_str().to_string()
+/// One row of the `wallet_allocations_current` view: the latest quantity of
+/// every source for a key, summed, plus that key's target percent.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
+pub struct WalletPosition {
+    pub symbol: String,
+    pub group_name: Option<String>,
+    pub barca: Option<String>,
+    pub asset_class: String,
+    pub target_percent: f64,
+    pub current_quantity: f64,
+    pub last_price: Option<f64>,
+    /// Every source's notes joined with " | ".
+    pub notes: Option<String>,
+    /// How many ledger sources were summed into `current_quantity`. Only a
+    /// single-source position can have its quantity corrected directly.
+    pub source_count: i64,
 }
 
-// Persisted allocation computation (allocations)
+impl WalletPosition {
+    pub fn key(&self) -> PositionKey {
+        PositionKey {
+            symbol: self.symbol.clone(),
+            group_name: self.group_name.clone().unwrap_or_default(),
+            barca: self.barca.clone().unwrap_or_default(),
+            asset_class: self.asset_class.clone(),
+        }
+    }
+}
+
+/// The latest ledger row of one funding source of a position (same key +
+/// same `notes`) — what `wallet_allocations_current` sums per position.
+/// Used to export the wallet one line per source, like the wallet CSV.
+#[derive(Debug, Clone, FromRow, PartialEq)]
+pub struct PositionSource {
+    pub symbol: String,
+    pub group_name: Option<String>,
+    pub barca: Option<String>,
+    pub asset_class: String,
+    pub current_quantity: f64,
+    pub notes: Option<String>,
+}
+
+/// A target percent for one position key (the `portfolio_targets` table).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewPortfolioTarget {
+    pub key: PositionKey,
+    pub target_percent: f64,
+}
+
+// ---------------------------------------------------------------------------
+// BARCA targets
+// ---------------------------------------------------------------------------
+
+/// A target percent for one top-level bucket ("barca") in one market
+/// profile ("BullMarket", "BearMarket", ...).
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct AllocationRecord {
+pub struct BarcaTarget {
     pub id: Option<i64>,
-    pub computed_at: String,
-    pub payload: serde_json::Value,
+    pub market: String,
+    pub barca: String,
+    pub target_percent: f64,
+    pub updated_by: Option<i64>,
     pub created_at: Option<String>,
+    pub updated_at: Option<String>,
 }
 
-// Read models for dashboard/history endpoints
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct NewBarcaTarget {
+    pub barca: String,
+    pub target_percent: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Allocation report (the /api/allocations response)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AssetAllocation {
+    pub symbol: String,
+    pub group: String,
+    pub barca: String,
+    pub price: f64,
+    pub current_quantity: f64,
+    pub value: f64,
+    pub target_percent: f64,
+    pub current_percent: f64,
+    pub deviation: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GroupAllocation {
+    pub group: String,
+    pub value: f64,
+    pub target_percent: f64,
+    pub current_percent: f64,
+    pub deviation: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BarcaAllocation {
+    pub barca: String,
+    pub value: f64,
+    pub target_percent: f64,
+    pub current_percent: f64,
+    pub deviation: f64,
+}
+
+/// Actual value of a barca, without a target (a barca may have holdings but
+/// no target, or a target but no holdings yet).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BarcaActual {
+    pub barca: String,
+    pub value: f64,
+    pub current_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct AllocationReport {
+    pub total_value: f64,
+    pub per_asset: Vec<AssetAllocation>,
+    pub per_group: Vec<GroupAllocation>,
+    pub per_barca: Vec<BarcaAllocation>,
+    pub per_barca_actual: Vec<BarcaActual>,
+}
+
+// ---------------------------------------------------------------------------
+// History snapshots
+// ---------------------------------------------------------------------------
+
+/// Everything recorded for one "Update Prices" click, written atomically.
+#[derive(Debug, Clone)]
+pub struct AllocationSnapshot {
+    pub timestamp: String, // RFC 3339
+    pub report: AllocationReport,
+    /// Optional per-symbol audit note (JSON) stored in `history_assets.extra`,
+    /// e.g. the original BRL price and the PTAX used to convert it.
+    pub asset_notes: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct AssetHistoryRow {
     pub timestamp: String,
     pub symbol: String,
+    #[serde(rename = "group")]
     pub group_name: Option<String>,
     pub barca: Option<String>,
     pub price: Option<f64>,
@@ -123,33 +241,46 @@ pub struct AssetHistoryRow {
     pub value: Option<f64>,
     pub target_percent: Option<f64>,
     pub current_percent: Option<f64>,
+    #[serde(rename = "deviation")]
     pub deviation_percent: Option<f64>,
     pub value_deviation: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GroupHistoryRow {
+    pub timestamp: String,
+    #[serde(rename = "group")]
+    pub group_name: String,
+    pub value: Option<f64>,
+    pub current_percent: Option<f64>,
+    pub target_percent: Option<f64>,
+    #[serde(rename = "deviation")]
+    pub deviation_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct BarcaHistoryRow {
     pub timestamp: String,
     pub barca: String,
     pub value: Option<f64>,
     pub current_percent: Option<f64>,
     pub target_percent: Option<f64>,
+    #[serde(rename = "deviation")]
     pub deviation_percent: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct GroupHistoryRow {
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct TotalHistoryRow {
     pub timestamp: String,
-    pub group_name: String,
-    pub value: Option<f64>,
-    pub current_percent: Option<f64>,
-    pub target_percent: Option<f64>,
-    pub deviation_percent: Option<f64>,
+    pub total_value: Option<f64>,
 }
 
-/// The three permission tiers. Ordered `User < Manager < Admin` so
-/// `current_role.satisfies(minimum)` is a plain `>=` comparison — no policy
-/// engine needed for three fixed tiers.
+// ---------------------------------------------------------------------------
+// Users and sessions
+// ---------------------------------------------------------------------------
+
+/// The three permission tiers. Ordered `User < Manager < Admin`, so
+/// `role.satisfies(minimum)` is a plain `>=` comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -181,39 +312,8 @@ impl Role {
     }
 }
 
-/// Which market this asset belongs to, for pricing (which provider to call)
-/// and for target-percent grouping (BARCA). Only `Crypto` has a Bull/Bear
-/// market-cycle concept — the others use `"default"` for `market`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AssetClass {
-    Crypto,
-    BrEquities,
-    UsIndices,
-}
-
-impl AssetClass {
-    pub fn parse(s: &str) -> Option<AssetClass> {
-        match s {
-            "crypto" => Some(AssetClass::Crypto),
-            "br-equities" => Some(AssetClass::BrEquities),
-            "us-indices" => Some(AssetClass::UsIndices),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            AssetClass::Crypto => "crypto",
-            AssetClass::BrEquities => "br-equities",
-            AssetClass::UsIndices => "us-indices",
-        }
-    }
-}
-
-// A user account. `role` is stored as plain TEXT (validated against
-// Role::parse at the usecase boundary) rather than a custom sqlx type, to
-// keep this struct a trivial FromRow mapping like the rest of this module.
+/// A user account. `role` is stored as plain TEXT and validated with
+/// `Role::parse` at the use-case boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct User {
     pub id: Option<i64>,
@@ -221,17 +321,14 @@ pub struct User {
     #[serde(skip_serializing)]
     pub password_hash: String,
     pub role: String,
-    // Mandatory + unique (see migrations/0005): the intended anchor for
-    // future account activation / email verification / password-reset-link
-    // flows, none of which are built yet — this is just the field.
     pub email: String,
     pub phone: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
-// Opaque, single-use-per-refresh session token (append-only; a used/expired
-// row is marked revoked rather than deleted, for audit).
+/// A stored refresh token. Only the SHA-256 hash of the token is kept; a
+/// revoked or expired row is kept (marked) rather than deleted, for audit.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct RefreshToken {
     pub id: Option<i64>,
@@ -242,74 +339,63 @@ pub struct RefreshToken {
     pub created_at: Option<String>,
 }
 
-// A target percentage for one (market, barca) — `barca` is the same
-// top-level bucket concept as WalletAllocation::barca (e.g. "Base",
-// "Altcoins", "IBOVE"), not the sub-grouping in WalletAllocation::group_name.
-// Mutable (not append-only, unlike WalletAllocation) — an admin/manager
-// editing targets is changing configuration, not recording a new ledger entry.
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct BarcaTarget {
-    pub id: Option<i64>,
-    pub market: String,
-    pub barca: String,
-    pub target_percent: f64,
-    pub updated_by: Option<i64>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-// A target percentage for one (symbol, group_name, barca, asset_class) —
-// mutable configuration, not ledger history, same reasoning as BarcaTarget.
-// wallet_allocations stays append-only for quantity/notes (per funding
-// source, summed); target_percent lives here instead so editing it can
-// never compete against a stale value left behind in some other funding
-// source's ledger row (see migrations/0008).
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct PortfolioTarget {
-    pub id: Option<i64>,
-    pub symbol: String,
-    pub group_name: String,
-    pub barca: String,
-    pub asset_class: String,
-    pub target_percent: f64,
-    pub updated_by: Option<i64>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
-
 #[cfg(test)]
-mod role_tests {
-    use super::Role;
+mod tests {
+    use super::*;
 
     #[test]
-    fn parses_known_role_strings() {
+    fn role_parses_known_strings_case_sensitively() {
         assert_eq!(Role::parse("admin"), Some(Role::Admin));
         assert_eq!(Role::parse("manager"), Some(Role::Manager));
         assert_eq!(Role::parse("user"), Some(Role::User));
-    }
-
-    #[test]
-    fn rejects_unknown_role_strings() {
         assert_eq!(Role::parse("superuser"), None);
         assert_eq!(Role::parse(""), None);
-        assert_eq!(Role::parse("Admin"), None); // case-sensitive on purpose
+        assert_eq!(Role::parse("Admin"), None);
     }
 
     #[test]
-    fn as_str_round_trips_through_parse() {
+    fn role_as_str_round_trips_through_parse() {
         for role in [Role::Admin, Role::Manager, Role::User] {
             assert_eq!(Role::parse(role.as_str()), Some(role));
         }
     }
 
     #[test]
-    fn satisfies_is_a_minimum_rank_check() {
-        assert!(Role::Admin.satisfies(Role::User));
+    fn role_satisfies_is_a_minimum_rank_check() {
         assert!(Role::Admin.satisfies(Role::Manager));
-        assert!(Role::Admin.satisfies(Role::Admin));
         assert!(Role::Manager.satisfies(Role::User));
+        assert!(Role::User.satisfies(Role::User));
         assert!(!Role::Manager.satisfies(Role::Admin));
         assert!(!Role::User.satisfies(Role::Manager));
-        assert!(Role::User.satisfies(Role::User));
+    }
+
+    #[test]
+    fn asset_class_round_trips_and_rejects_unknown_values() {
+        for class in [
+            AssetClass::Crypto,
+            AssetClass::BrEquities,
+            AssetClass::UsIndices,
+        ] {
+            assert_eq!(AssetClass::parse(class.as_str()), Some(class));
+        }
+        assert_eq!(AssetClass::parse("stocks"), None);
+    }
+
+    #[test]
+    fn position_key_treats_missing_group_and_barca_as_empty() {
+        let position = WalletPosition {
+            symbol: "BTC".into(),
+            group_name: None,
+            barca: None,
+            asset_class: "crypto".into(),
+            target_percent: 0.0,
+            current_quantity: 1.0,
+            last_price: None,
+            notes: None,
+            source_count: 1,
+        };
+        let key = position.key();
+        assert_eq!(key.group_name, "");
+        assert_eq!(key.barca, "");
     }
 }

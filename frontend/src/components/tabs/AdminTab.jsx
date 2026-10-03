@@ -168,24 +168,28 @@ function ResetPasswordControl({ userId, onResetPassword }) {
 // Admin-only tab: list/create/change-role/delete user accounts, and reset a
 // user's password. There is no public sign-up anywhere in the app — this is
 // the only way an account gets created, beyond the env-var-seeded bootstrap admin.
-export function AdminTab({ active, currentUsername }) {
-  const { users, loading, error, create, update, resetPassword, remove } = useUsers(active);
+export function AdminTab({ currentUsername }) {
+  const { users, loading, error, create, update, resetPassword, remove } = useUsers();
   const [showNewUserForm, setShowNewUserForm] = useState(false);
+  // Shown inline (not with alert(), which blocks the whole page).
+  const [actionError, setActionError] = useState("");
 
   const handleRoleChange = async (id, role) => {
+    setActionError("");
     try {
       await update(id, { role });
     } catch (err) {
-      alert("Failed to update role: " + err.message);
+      setActionError("Failed to update role: " + err.message);
     }
   };
 
   const handleDelete = async (id, username) => {
     if (!window.confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+    setActionError("");
     try {
       await remove(id);
     } catch (err) {
-      alert("Failed to delete user: " + err.message);
+      setActionError("Failed to delete user: " + err.message);
     }
   };
 
@@ -203,11 +207,11 @@ export function AdminTab({ active, currentUsername }) {
         </Button>
       )}
 
-      {error && (
-        <Typography variant="body2" sx={{ color: "error.main", mb: 2 }}>
-          {error}
+      {[error, actionError].filter(Boolean).map((message) => (
+        <Typography key={message} role="alert" variant="body2" sx={{ color: "error.main", mb: 2 }}>
+          {message}
         </Typography>
-      )}
+      ))}
 
       <TableContainer component={Paper} sx={{ maxWidth: "100%", overflowX: "auto" }}>
         <Table sx={{ minWidth: 700 }}>

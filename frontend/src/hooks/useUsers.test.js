@@ -15,21 +15,16 @@ describe("useUsers", () => {
     vi.resetAllMocks();
   });
 
-  it("does not fetch while inactive", () => {
-    renderHook(() => useUsers(false));
-    expect(api.fetchUsers).not.toHaveBeenCalled();
-  });
-
-  it("fetches the user list once active", async () => {
+  it("fetches the user list on mount", async () => {
     api.fetchUsers.mockResolvedValue([{ id: 1, username: "admin", role: "admin" }]);
-    const { result } = renderHook(() => useUsers(true));
+    const { result } = renderHook(() => useUsers());
     await waitFor(() => expect(result.current.users).toHaveLength(1));
     expect(result.current.loading).toBe(false);
   });
 
   it("surfaces a fetch failure as an error message, not a thrown exception", async () => {
     api.fetchUsers.mockRejectedValue(new Error("network down"));
-    const { result } = renderHook(() => useUsers(true));
+    const { result } = renderHook(() => useUsers());
     await waitFor(() => expect(result.current.error).toBe("network down"));
     expect(result.current.users).toEqual([]);
   });
@@ -38,7 +33,7 @@ describe("useUsers", () => {
     api.fetchUsers.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 2, username: "bob", role: "user" }]);
     api.createUser.mockResolvedValue({ id: 2, username: "bob", role: "user" });
 
-    const { result } = renderHook(() => useUsers(true));
+    const { result } = renderHook(() => useUsers());
     await waitFor(() => expect(api.fetchUsers).toHaveBeenCalledTimes(1));
 
     await act(async () => {
@@ -54,7 +49,7 @@ describe("useUsers", () => {
     api.fetchUsers.mockResolvedValue([]);
     api.updateUser.mockResolvedValue({ ok: true });
 
-    const { result } = renderHook(() => useUsers(true));
+    const { result } = renderHook(() => useUsers());
     await waitFor(() => expect(api.fetchUsers).toHaveBeenCalledTimes(1));
 
     await act(async () => {
@@ -69,7 +64,7 @@ describe("useUsers", () => {
     api.fetchUsers.mockResolvedValue([]);
     api.deleteUser.mockResolvedValue(undefined);
 
-    const { result } = renderHook(() => useUsers(true));
+    const { result } = renderHook(() => useUsers());
     await waitFor(() => expect(api.fetchUsers).toHaveBeenCalledTimes(1));
 
     await act(async () => {

@@ -1,63 +1,102 @@
+//! Persistence "ports": the traits use cases depend on. `infra::sqlite`
+//! implements all of them; tests can swap in fakes. Each trait covers one
+//! area so a use case only depends on what it actually uses.
+
 use crate::domain::models::{
-    AllocationRecord, AssetHistoryRow, AssetSnapshot, BarcaHistoryRow, BarcaSnapshot, BarcaTarget,
-    GroupHistoryRow, GroupSnapshot, PortfolioTarget, RefreshToken, TotalSnapshot, User,
-    WalletAllocation,
+    AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
+    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionSource, RefreshToken, TotalHistoryRow,
+    User, WalletPosition,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::fmt;
 
-pub type RepoResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type RepoError = Box<dyn std::error::Error + Send + Sync>;
+pub type RepoResult<T> = Result<T, RepoError>;
+
+/// Returned (boxed) when an insert/update hits a UNIQUE constraint, so a use
+/// case can turn it into a friendly "already exists" error with
+/// `error.downcast_ref::<UniqueViolation>()` instead of parsing DB messages.
+#[derive(Debug)]
+pub struct UniqueViolation {
+    /// The database's description of the constraint, e.g.
+    /// "UNIQUE constraint failed: users.username".
+    pub constraint: String,
+}
+
+impl fmt::Display for UniqueViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.constraint)
+    }
+}
+
+impl std::error::Error for UniqueViolation {}
+
+/// The wallet ledger and the portfolio targets. Grouped in one trait
+/// because some writes must touch both tables in a single transaction.
+#[async_trait]
+pub trait PortfolioRepo: Send + Sync {
+    /// One row per position key (the `wallet_allocations_current` view).
+    async fn fetch_positions(&self) -> RepoResult<Vec<WalletPosition>>;
+
+    /// The latest ledger row of every source, i.e. `fetch_positions`
+    /// before the sources are summed.
+    async fn fetch_position_sources(&self) -> RepoResult<Vec<PositionSource>>;
+
+    /// Appends ledger rows in one transaction (all or nothing).
+    async fn append_ledger_entries(&self, entries: &[LedgerEntry]) -> RepoResult<()>;
+
+    /// Replaces every portfolio target with `targets` and appends
+    /// `new_entries`, in one transaction.
+    async fn replace_targets(
+        &self,
+        targets: &[NewPortfolioTarget],
+        new_entries: &[LedgerEntry],
+        updated_by: Option<i64>,
+    ) -> RepoResult<()>;
+
+    /// Adds targets only for keys that have none yet (existing targets are
+    /// never overwritten) and appends `new_entries`, in one transaction.
+    /// Used by CSV import.
+    async fn import_positions(
+        &self,
+        targets: &[NewPortfolioTarget],
+        new_entries: &[LedgerEntry],
+    ) -> RepoResult<()>;
+}
 
 #[async_trait]
-pub trait HistoryRepo: Send + Sync {
-    async fn insert_asset_snapshot(&self, snap: &AssetSnapshot) -> RepoResult<()>;
-    async fn insert_barca_snapshot(&self, snap: &BarcaSnapshot) -> RepoResult<()>;
-    async fn insert_total_snapshot(&self, snap: &TotalSnapshot) -> RepoResult<()>;
+pub trait BarcaTargetRepo: Send + Sync {
+    async fn fetch_barca_targets(&self, market: &str) -> RepoResult<Vec<BarcaTarget>>;
 
-    async fn fetch_assets(
+    /// Replaces every target of `market` with `targets`, in one transaction
+    /// (a barca left out is deleted).
+    async fn replace_barca_targets(
         &self,
-        from: Option<&str>,
-        to: Option<&str>,
-    ) -> RepoResult<Vec<AssetHistoryRow>>;
-    async fn fetch_barca(
-        &self,
-        from: Option<&str>,
-        to: Option<&str>,
-    ) -> RepoResult<Vec<BarcaHistoryRow>>;
-    async fn fetch_groups(
-        &self,
-        from: Option<&str>,
-        to: Option<&str>,
-    ) -> RepoResult<Vec<GroupHistoryRow>>;
-    async fn fetch_totals(
-        &self,
-        from: Option<&str>,
-        to: Option<&str>,
-    ) -> RepoResult<Vec<TotalSnapshot>>;
+        market: &str,
+        targets: &[NewBarcaTarget],
+        updated_by: Option<i64>,
+    ) -> RepoResult<()>;
+}
 
-    // Wallet allocations ledger (append-only)
-    // Insert a new wallet allocation record (do not delete or update existing rows).
-    // No production caller needs a single-row insert anymore (CSV import
-    // batches via bulk_insert_wallet_allocations below) — kept for tests
-    // that need to set up one specific row at a time.
-    #[allow(dead_code)]
-    async fn insert_wallet_allocation(&self, wa: &WalletAllocation) -> RepoResult<()>;
-    // Insert several rows as one atomic transaction — the "Save all" bulk
-    // portfolio edit either fully lands or fully fails, never half-applies.
-    async fn bulk_insert_wallet_allocations(&self, rows: &[WalletAllocation]) -> RepoResult<()>;
-    // Fetch latest/current wallet allocations (one row per symbol representing the most recent entry)
-    async fn fetch_current_wallet_allocations(&self) -> RepoResult<Vec<WalletAllocation>>;
-    // Fetch audit/history for a given symbol (all rows for symbol ordered by created_at desc)
-    #[allow(dead_code)]
-    async fn fetch_wallet_allocation_history(
-        &self,
-        symbol: &str,
-    ) -> RepoResult<Vec<WalletAllocation>>;
+/// Price-history snapshots, one per "Update Prices" click.
+#[async_trait]
+pub trait SnapshotRepo: Send + Sync {
+    /// Writes the full report plus per-asset/group/barca/total history rows
+    /// in one transaction.
+    async fn record_snapshot(&self, snapshot: &AllocationSnapshot) -> RepoResult<()>;
 
-    // Persist computed allocation payload
-    async fn persist_allocation_record(&self, rec: &AllocationRecord) -> RepoResult<()>;
+    // These return the whole history, oldest first. Fine for a personal
+    // dashboard (a few rows per click); add a date range if it ever grows
+    // large enough to be slow.
+    async fn fetch_asset_history(&self) -> RepoResult<Vec<AssetHistoryRow>>;
+    async fn fetch_group_history(&self) -> RepoResult<Vec<GroupHistoryRow>>;
+    async fn fetch_barca_history(&self) -> RepoResult<Vec<BarcaHistoryRow>>;
+    async fn fetch_total_history(&self) -> RepoResult<Vec<TotalHistoryRow>>;
 
-    // Groups history
-    async fn insert_group_snapshot(&self, snap: &GroupSnapshot) -> RepoResult<()>;
+    /// Price (USD) of every symbol in the most recent snapshot. Empty if
+    /// prices were never updated.
+    async fn fetch_latest_prices(&self) -> RepoResult<HashMap<String, f64>>;
 }
 
 pub struct NewUser<'a> {
@@ -68,9 +107,7 @@ pub struct NewUser<'a> {
     pub phone: Option<&'a str>,
 }
 
-// Every field is applied only when Some — a partial update, not a full
-// overwrite, so an admin can change just the role, or just reset a password,
-// without having to resend everything else.
+/// A partial update: only the fields that are `Some` change.
 #[derive(Default)]
 pub struct UserUpdate<'a> {
     pub role: Option<&'a str>,
@@ -86,8 +123,10 @@ pub trait UserRepo: Send + Sync {
     async fn list_users(&self) -> RepoResult<Vec<User>>;
     async fn count_users(&self) -> RepoResult<i64>;
     async fn create_user(&self, new_user: NewUser<'_>) -> RepoResult<User>;
-    async fn update_user(&self, id: i64, update: UserUpdate<'_>) -> RepoResult<()>;
-    async fn delete_user(&self, id: i64) -> RepoResult<()>;
+    /// Returns `false` if no user has this id.
+    async fn update_user(&self, id: i64, update: UserUpdate<'_>) -> RepoResult<bool>;
+    /// Returns `false` if no user has this id.
+    async fn delete_user(&self, id: i64) -> RepoResult<bool>;
 }
 
 #[async_trait]
@@ -100,55 +139,4 @@ pub trait RefreshTokenRepo: Send + Sync {
     ) -> RepoResult<()>;
     async fn find_refresh_token(&self, token_hash: &str) -> RepoResult<Option<RefreshToken>>;
     async fn revoke_refresh_token(&self, token_hash: &str) -> RepoResult<()>;
-}
-
-pub struct BarcaTargetInput<'a> {
-    pub barca: &'a str,
-    pub target_percent: f64,
-}
-
-#[async_trait]
-pub trait BarcaTargetRepo: Send + Sync {
-    async fn fetch_barca_targets(&self, market: &str) -> RepoResult<Vec<BarcaTarget>>;
-    // Replaces every target row for this market with exactly the given set,
-    // as one atomic transaction — a barca left out of `targets` is deleted,
-    // matching "editable table + Save all" semantics (the UI always submits
-    // the full current state, not a diff).
-    async fn replace_barca_targets(
-        &self,
-        market: &str,
-        targets: &[BarcaTargetInput<'_>],
-        updated_by: Option<i64>,
-    ) -> RepoResult<()>;
-}
-
-pub struct PortfolioTargetInput<'a> {
-    pub symbol: &'a str,
-    pub group_name: &'a str,
-    pub barca: &'a str,
-    pub asset_class: &'a str,
-    pub target_percent: f64,
-}
-
-#[async_trait]
-pub trait PortfolioTargetRepo: Send + Sync {
-    #[allow(dead_code)]
-    async fn fetch_portfolio_targets(&self) -> RepoResult<Vec<PortfolioTarget>>;
-    // Replaces the whole table with exactly the given set, as one atomic
-    // transaction — same "editable table + Save all" semantics as
-    // replace_barca_targets (a row left out of `targets` is deleted).
-    async fn replace_portfolio_targets(
-        &self,
-        targets: &[PortfolioTargetInput<'_>],
-        updated_by: Option<i64>,
-    ) -> RepoResult<()>;
-    // Inserts a target only for a (symbol, group, barca, asset_class) that
-    // doesn't already have one — used by CSV import to seed a brand-new
-    // asset's target without ever overwriting a manager-set value for an
-    // asset that already exists ("local distribution always overcomes the
-    // CSV file entries").
-    async fn seed_portfolio_targets_if_absent(
-        &self,
-        targets: &[PortfolioTargetInput<'_>],
-    ) -> RepoResult<()>;
 }

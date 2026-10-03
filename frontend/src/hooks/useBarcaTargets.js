@@ -4,7 +4,7 @@ import { fetchBarcaTargets, saveBarcaTargets } from "../api/client";
 // Manager+ editable-table data for the BARCA-targets admin tab, scoped to
 // one market profile at a time (see migrations/0006 — a barca target
 // belongs to exactly one market, with no cross-market fallback).
-export function useBarcaTargets(active, market) {
+export function useBarcaTargets(market) {
   const [targets, setTargets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -16,13 +16,14 @@ export function useBarcaTargets(active, market) {
       setTargets(await fetchBarcaTargets(market));
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [market]);
 
   useEffect(() => {
-    if (active) refresh();
-  }, [active, refresh]);
+    refresh();
+  }, [refresh]);
 
   const save = useCallback(
     async (nextTargets) => {

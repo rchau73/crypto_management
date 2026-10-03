@@ -1,0 +1,25 @@
+flowchart TD
+    START(["Update Prices"]) --> BANDS{"Is any BARCA outside<br/>its ±20% band?"}
+    BANDS -- "No" --> HOLD["Do nothing.<br/>Drift inside the band is noise."]
+    BANDS -- "Yes" --> SENT{"Macro context +<br/>Fear & Greed index"}
+
+    SENT -- "Fear / Extreme Fear" --> CAIXA_HIGH{"Caixa above<br/>its target?"}
+    CAIXA_HIGH -- "Yes" --> BUY["DCA BUY<br/>Move Caixa → BARCAs below target<br/>(one step = 30% of the $ gap)"]
+    CAIXA_HIGH -- "No" --> WAIT_FEAR["Hold. Do not sell into fear.<br/>No cash to deploy."]
+
+    SENT -- "Neutral" --> NEUTRAL["Rebalance slowly<br/>toward targets, in DCA steps"]
+
+    SENT -- "Greed / Extreme Greed" --> OVER{"Any BARCA above<br/>its target?"}
+    OVER -- "Yes" --> SELL["DCA SELL<br/>Move over-target BARCAs → Caixa<br/>(one step = 30% of the $ gap)"]
+    OVER -- "No" --> WAIT_GREED["Hold. Do not buy into greed."]
+
+    BUY --> NEXT(["Next round: re-check after the next price update"])
+    SELL --> NEXT
+    NEUTRAL --> NEXT
+
+    style BUY fill:#14532d,stroke:#86efac,color:#e5e7eb
+    style SELL fill:#7f1d1d,stroke:#fca5a5,color:#e5e7eb
+    style HOLD fill:#1e293b,stroke:#94a3b8,color:#e5e7eb
+    style WAIT_FEAR fill:#1e293b,stroke:#94a3b8,color:#e5e7eb
+    style WAIT_GREED fill:#1e293b,stroke:#94a3b8,color:#e5e7eb
+    style NEUTRAL fill:#1e293b,stroke:#fcd34d,color:#e5e7eb

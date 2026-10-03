@@ -64,23 +64,12 @@ export async function fetchAllocations() {
 }
 
 export async function fetchHistory(level) {
-  const res = await apiFetch(`/api/history?level=${level}`);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Failed to fetch history: ${res.status} ${res.statusText} ${text}`);
-  }
-  return res.json();
+  const res = await apiFetch(`/api/history?level=${encodeURIComponent(level)}`);
+  return parseJsonOrThrow(res, "Failed to fetch history");
 }
 
-export async function importWallets(path = "wallet_allocations.csv") {
-  const res = await postJson("/api/import_wallets", { path });
-  return parseJsonOrThrow(res, "Import failed");
-}
-
-// Uploads a CSV file's actual content — unlike importWallets (which asks
-// the server to read a path on its own filesystem), this works regardless
-// of where the backend is deployed, since the browser sends the file
-// itself. Manager+ only, enforced server-side.
+// Uploads a wallet CSV. Only new positions are added; existing ones are
+// never overwritten. Manager+ only, enforced server-side.
 export async function uploadWalletCsv(file) {
   const formData = new FormData();
   formData.append("file", file);
@@ -89,6 +78,20 @@ export async function uploadWalletCsv(file) {
     body: formData,
   });
   return parseJsonOrThrow(res, "Import failed");
+}
+
+// Downloads the wallet in the import format (one line per source, plus
+// price_usd/value_usd). Manager+ only, enforced server-side. Returns the
+// file as a Blob with the server-suggested filename.
+export async function downloadWalletCsv() {
+  const res = await apiFetch("/api/export_wallets");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || "Export failed");
+  }
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "wallet_allocations.csv";
+  return { blob: await res.blob(), filename };
 }
 
 export async function login(username, password) {
@@ -143,6 +146,19 @@ export async function fetchPortfolioTargets() {
 export async function savePortfolioTargets(rows) {
   const res = await putJson("/api/portfolio/targets", { rows });
   return parseJsonOrThrow(res, "Failed to save portfolio targets");
+}
+
+// Fixes the quantity of a position with exactly one source, immediately
+// (not part of "Save All"). The server refuses multi-source positions.
+export async function correctWalletQuantity({ symbol, group_name, barca, asset_class, current_quantity }) {
+  const res = await putJson("/api/portfolio/targets/quantity", {
+    symbol,
+    group_name,
+    barca,
+    asset_class,
+    current_quantity,
+  });
+  return parseJsonOrThrow(res, "Failed to correct quantity");
 }
 
 export async function fetchBarcaTargets(market) {

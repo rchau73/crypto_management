@@ -8,3 +8,4 @@ wallet_allocations*.*
 *.bkp
 server.log
 server.pid
+.DS_Store

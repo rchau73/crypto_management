@@ -2,6 +2,33 @@
 
 A full-stack Rust + React dashboard for managing and visualizing your crypto wallet allocations.
 
+**New here? Start with [BARCA.md](BARCA.md)**: the investment model this app implements (BARCA buckets, the ±20% rebalancing bands, Fear & Greed–driven DCA). This README covers the technical side.
+
+> [!CAUTION]
+> ## ⚠️ Disclaimer — not investment advice
+>
+> **This project is a software engineering study.** It deals with crypto and
+> financial-market data, but it is **not** meant to recommend any investment,
+> asset, strategy, trade or timing, and nothing in the app or its
+> documentation is financial advice.
+>
+> - **Use at your own risk.** Anyone who uses this software, or the BARCA
+>   model described here, to make real investment decisions does so entirely
+>   at their own risk.
+> - **The app sees only part of the picture.** Real decisions depend on
+>   external and macroeconomic information (interest rates, liquidity,
+>   regulation, news, market sentiment, personal circumstances...) that the
+>   app does not collect or analyse.
+> - **Data can be wrong or late.** Prices come from third-party APIs and may be
+>   delayed, missing or incorrect, and the software may contain bugs.
+> - **100% the user's responsibility.** Every investment decision, and its
+>   outcome, is solely the responsibility of the person who makes it. The
+>   authors accept no liability for any loss.
+> - **The BARCA model is not an original creation of this project.** It was
+>   compiled from several sources and approaches by other people. All rights
+>   to the model and its ideas belong to their respective authors; this
+>   project only implements and documents them as part of the study.
+
 ---
 
 ## Features
@@ -24,20 +51,19 @@ Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 
 ![Backend architecture: composition root, usecases, domain ports, and infra adapters](docs/architecture.png)
 
-**Dependency direction always points inward**: `main` depends on `usecases` and `infra`; `usecases` depends only on `domain`; `infra` implements `domain`'s traits. Nothing in `domain/` or `usecases/` imports `sqlx` or `reqwest` — that's what makes the pure logic trivially unit-testable and the adapters swappable.
+**Dependency direction always points inward**: `main`/`api` depend on `usecases`; `usecases` depends only on `domain`; `infra` implements `domain`'s traits. Nothing in `domain/` or `usecases/` imports `sqlx` or `reqwest` — that's what makes the pure logic trivially unit-testable and the adapters swappable.
 
 | Layer | Path | Responsibility |
 |---|---|---|
-| Domain | `src/domain/models.rs` | Plain structs shared across layers (`Crypto`, `WalletAllocation`, `User`, `Role`, snapshot rows). No logic, no I/O. |
-| Domain (ports) | `src/domain/repository.rs`, `src/domain/market_data.rs` | Traits (`HistoryRepo`, `CryptoProvider`, `UserRepo`, `RefreshTokenRepo`) that `usecases` code against instead of concrete databases/APIs. |
-| Use cases | `src/usecases/compute_allocations.rs` | Pure function: wallet + prices + targets in, per-asset/per-group/per-BARCA breakdown out. No I/O — the easiest thing in the codebase to unit test. |
-| Use cases | `src/usecases/allocations_service.rs`, `src/usecases/history_service.rs` | Orchestrate ports to fetch prices, compute allocations, persist snapshots, and serve history — the application's actual behavior. |
-| Use cases | `src/usecases/auth_service.rs`, `src/usecases/user_service.rs` | Password hashing (argon2id) + JWT issue/verify + login/refresh/logout; admin CRUD on user accounts. See [Authentication & Authorization](#authentication--authorization). |
-| Infra (adapters) | `src/infra/sqlite/repo.rs` | One `SqliteRepo` implementing `HistoryRepo`, `UserRepo`, and `RefreshTokenRepo` against SQLite via `sqlx`. |
-| Infra (adapters) | `src/infra/coinmarketcap.rs` | Implements `CryptoProvider` against the CoinMarketCap REST API; owns that API's wire format and maps it into the domain `Crypto` type. |
-| HTTP glue | `src/auth_handlers.rs` | The `CurrentUser` Axum extractor (verifies the `access_token` cookie) and every `/api/auth/*` / `/api/admin/users*` handler — kept out of `main.rs` so it stays composition-root-sized. |
-| Composition root | `src/main.rs` | Axum route handlers (thin — they just call into `usecases`), env/config loading, DB pool + migrations, CORS, and wiring the concrete adapters into `AppState` at startup. |
-| Scripts | `src/bin/*.rs` | Standalone CLI utilities (CSV importer, historical price exporter) — deliberately separate from the server binary. |
+| Domain | `src/domain/models.rs` | Plain structs shared across layers (`LedgerEntry` = a row written to the ledger, `WalletPosition` = a row of the current-positions view, `AllocationReport`, `User`, `Role`). No business logic, no I/O. |
+| Domain (ports) | `src/domain/repository.rs`, `src/domain/market_data.rs` | Small traits the use cases depend on: `PortfolioRepo`, `BarcaTargetRepo`, `SnapshotRepo`, `UserRepo`, `RefreshTokenRepo`, `CryptoProvider`, `EquityProvider`. |
+| Use cases | `src/usecases/compute_allocations.rs` | Pure function: positions + prices + BARCA targets in, typed `AllocationReport` out. No I/O — the easiest thing in the codebase to unit test. |
+| Use cases | `src/usecases/*_service.rs`, `wallet_import.rs`, `validation.rs` | One service per feature: `AllocationsService` (Update Prices), `HistoryService`, `TargetsService`, `WalletImportService` (CSV), `AuthService`, `UserService`. All input validation happens here, before anything is written. |
+| Infra (adapters) | `src/infra/sqlite/` | `SqliteRepo` implements every repo trait; `connect()` opens the pool (WAL, busy timeout) and runs migrations. Multi-table writes are single transactions. |
+| Infra (adapters) | `src/infra/coinmarketcap.rs`, `brapi.rs`, `finnhub.rs`, `http.rs` | Price providers. Each owns its API key and wire format; `http.rs` adds timeouts and checks the HTTP status before parsing. |
+| HTTP layer | `src/api/` | `build_router()` (used by `main` **and** the integration tests), `AppState` (services built once), thin handlers, and `ApiError`, which maps service errors to status codes and logs internal details instead of returning them. |
+| Composition root | `src/main.rs`, `src/config.rs` | Reads `AppConfig` from the environment once (fails fast), wires the concrete adapters, seeds first-run data, serves with graceful shutdown. |
+| Scripts | `src/bin/*.rs` | CLI tools built on the same library (`import_wallet_allocations` reuses `WalletImportService`). |
 
 ### Sequence diagram: `GET /api/allocations`
 
@@ -95,12 +121,12 @@ Three fixed roles, checked with a plain rank comparison (`Admin > Manager > User
 | Role | Can do |
 |---|---|
 | **User** | View allocations, per-group/BARCA tables, and the history dashboard. |
-| **Manager** | Everything User can, plus import a wallet CSV (`POST /api/import_wallets`). |
+| **Manager** | Everything User can, plus edit portfolio/BARCA targets, correct a single-source quantity, and upload a wallet CSV (`POST /api/import_wallets/upload`). |
 | **Admin** | Everything Manager can, plus create/edit/delete user accounts (`/api/admin/users*`). |
 
 - **Session**: a short-lived (15 min) JWT access token plus a longer-lived (14 day) opaque refresh token, both `HttpOnly`/`SameSite=Lax` cookies — never `localStorage`, which is readable by any injected script. The frontend's `api/client.js` transparently calls `/api/auth/refresh` once on a 401 and retries, so an expired access token never interrupts an active session.
 - **Passwords**: `argon2id` via the `argon2` crate. Never compared or stored in plaintext.
-- **No public registration**: every account is created by an Admin. The very first Admin is seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`ADMIN_EMAIL` env vars on first boot, if the `users` table is empty and all three are set (see `ensure_admin_seeded` in `main.rs`).
+- **No public registration**: every account is created by an Admin. The very first Admin is seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`ADMIN_EMAIL` env vars on first boot, if the `users` table is empty and all three are set (see `UserService::ensure_admin_exists`).
 - **CORS**: credentialed (cookie-carrying) requests can't use a wildcard origin — `FRONTEND_ORIGIN` must name the frontend's exact origin.
 - **Deliberately not used**: no API gateway (Kong et al.) — that solves problems (routing across many services, centralizing auth for many teams) this single-binary, handful-of-users app doesn't have, and would add a second stateful service to operate and patch for no benefit here. If you outgrow this, a lightweight reverse proxy (Caddy, for automatic HTTPS) or a perimeter layer (Cloudflare Tunnel + Access, useful specifically for secure remote/mobile access without opening an inbound port) are the right next steps — not a gateway.
 
@@ -168,7 +194,7 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
    - runs every pending migration in `migrations/` automatically (`sqlx::migrate!`), and
    - seeds `wallet_allocations` from your CSV **only if the table is completely empty**, and bootstraps the Admin account from `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`ADMIN_EMAIL` **only if the `users` table is completely empty** — both are safe to re-run on every boot, they're no-ops once you have real data.
 
-   You should see `Migrations applied` and `Listening on 127.0.0.1:3001` in the logs. If you add a new file under `migrations/` yourself, force a real rebuild before the next `cargo run` (e.g. `touch src/main.rs`) — `sqlx::migrate!` embeds migrations at compile time, and cargo doesn't always detect that a `.sql`-only change needs a rebuild, so a stale binary can silently skip it.
+   You should see `Database ready, migrations applied` and `Listening addr=127.0.0.1:3001` in the logs (change the address with `BIND_ADDR`, the log level with `RUST_LOG`). Startup stops with a clear error if a required setting is missing or a migration fails. New files under `migrations/` trigger a rebuild automatically (`build.rs`).
 
    To manually re-import the CSV later (e.g. to seed a newly-added asset — this never overwrites an existing DB row, see [below](#editable-portfolio-and-barca-targets)):
    - CLI: `cargo run --bin import_wallet_allocations -- wallet_allocations.csv`
@@ -241,7 +267,7 @@ Once you have data, the DB — not the CSV — is authoritative:
 cargo run --bin import_wallet_allocations -- wallet_allocations.csv
 ```
 
-Inserts a ledger row (and a `portfolio_targets` seed row) only for `(symbol, group, barca, asset_class)` combinations not already in the DB. Inspect current values with:
+Uses the same `WalletImportService` as the upload button: every row is validated first (a bad row aborts the whole import, with line numbers), and a ledger row plus a `portfolio_targets` row are added only for `(symbol, group, barca, asset_class)` combinations not already in the DB. Nothing is ever deleted. Inspect current values with:
 
 ```bash
 sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
@@ -261,10 +287,10 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
   Make sure `.env` has a valid CoinMarketCap `API_KEY` (required) and `CURRENT_MARKET`. `BRAPI_API_KEY`/`FINNHUB_API_KEY` only matter once you track a `br-equities`/`us-indices` asset — until then they're never called, so a placeholder value there is harmless.
 
 - **No admin account / can't log in on first boot:**  
-  `ensure_admin_seeded` only bootstraps an Admin if `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` are **all three** set — check the startup logs for a warning if one's missing.
+  The first-run admin is only created an Admin if `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` are **all three** set — check the startup logs for a warning if one's missing.
 
 - **A migration you just added doesn't seem to have run:**  
-  See the note in [Backend Setup](#backend-rust-setup) about forcing a rebuild (`touch src/main.rs`) — `cargo run` can silently reuse a binary compiled before a new `migrations/*.sql` file existed. Confirm with `sqlite3 ./data/crypto.db "SELECT version FROM _sqlx_migrations ORDER BY version DESC LIMIT 1;"`.
+  `build.rs` makes Cargo rebuild when `migrations/` changes, and startup aborts if a migration fails. Confirm what ran with `sqlite3 ./data/crypto.db "SELECT version FROM _sqlx_migrations ORDER BY version DESC LIMIT 1;"`.
 
 - **Dependency issues:**  
   Run `cargo update` in the backend and `npm install` in the frontend if you encounter build errors.

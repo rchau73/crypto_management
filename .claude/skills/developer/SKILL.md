@@ -19,25 +19,26 @@ This isn't bureaucracy for its own sake — it's the same reason a senior dev sk
 
 ## This repo's architecture (ground truth)
 
-This project is mid-migration to clean architecture (see commit `eac60ef "refactoring to use clean architecture + DB"`). The intended shape:
+Clean architecture (ports and adapters), dependencies pointing inwards:
 
-- `src/domain/` — plain data (`models.rs`) and repository **ports** (`repository.rs`, e.g. `HistoryRepo` trait). No business logic, no I/O.
-- `src/usecases/` — services that orchestrate domain + infra (`HistoryService`, `AllocationsService`, `compute_allocations`). Business logic lives here. Services take `Arc<dyn Trait>` dependencies via a `new()` constructor — this is deliberate DI for testability, not ceremony.
-- `src/infra/sqlite/` — concrete adapters (`SqliteRepo`) implementing the domain traits.
-- `src/csv_store.rs`, `src/csv_history.rs` — CSV read/write helpers. `csv_history.rs` is explicitly marked legacy in `main.rs` ("kept for legacy utilities, no fallback used") — don't wire it back into a live path without asking.
-- `src/bin/` — standalone one-off utility binaries (`import_wallet_allocations.rs`, `export_price_history.rs`). New scripts/importers/exporters belong here, not bolted onto `main.rs`.
-- `frontend/` — React 19 + MUI + Recharts + dayjs, built with Vite.
+- `src/domain/` — plain data (`models.rs`: `LedgerEntry` = a ledger write, `WalletPosition` = a row of the `wallet_allocations_current` view, `AllocationReport`, `User`, `Role`...) and the **ports**: `repository.rs` (`PortfolioRepo`, `BarcaTargetRepo`, `SnapshotRepo`, `UserRepo`, `RefreshTokenRepo`) and `market_data.rs` (`CryptoProvider`, `EquityProvider`, plus the `FakeProvider` test double). No business logic, no I/O.
+- `src/usecases/` — one service per feature (`AllocationsService`, `HistoryService`, `TargetsService`, `WalletImportService`, `AuthService`, `UserService`), the pure `compute_allocations`, and shared input checks in `validation.rs`. Services take `Arc<dyn Trait>` in `new()` and return a typed error enum.
+- `src/infra/` — `sqlite/` (`SqliteRepo` implements every repo trait; `connect()` configures the pool and runs migrations; `test_repo()` gives tests a migrated in-memory DB) and the price providers (`coinmarketcap.rs`, `brapi.rs`, `finnhub.rs`, sharing `http.rs` for timeouts + status checks).
+- `src/api/` — `build_router()` (used by `main` **and** `src/tests/integration.rs`), `AppState` (services built once), thin handlers, and `error.rs` (`ApiError`; `From<ServiceError>` impls decide status codes, so handlers just use `?`).
+- `src/config.rs` + `src/main.rs` — composition root: read `AppConfig` once, wire adapters, seed first-run data, serve.
+- `src/bin/` — CLI tools built on the library (`src/lib.rs`), e.g. `import_wallet_allocations` reuses `WalletImportService`. New scripts go here and reuse services instead of re-implementing logic.
+- `frontend/` — React 19 + MUI + Recharts + dayjs (Vite, Vitest). `App.jsx` only composes tabs; each tab lives in `components/tabs/`, data-fetching in `hooks/`, pure logic in `utils/` (with tests). Tabs are mounted only while visible and fetch on mount.
 
-**Known architectural debt — be aware of it, and don't add to it:**
-- `src/main.rs` (~300 lines) still mixes Axum route handlers with API response structs that duplicate domain models. When you touch it, prefer moving logic into `usecases/` or `domain/models.rs` rather than growing `main.rs` further.
-- `frontend/src/App.jsx` (~1250 lines) is a single monolithic component holding nearly the entire UI. Do not add more to it. If a task touches App.jsx, that's a signal to extract the piece you're touching into `frontend/src/components/` (create the folder if it doesn't exist) rather than inserting more inline JSX.
-
-Treat both as debt to shrink opportunistically, not a pattern to imitate.
+**Guard rails — keep these true:**
+- Handlers never touch a repo directly; they call one service.
+- `main.rs` and `App.jsx` stay composition-only; new behaviour goes into a service / component.
+- Multi-row or multi-table writes are one transaction (see `PortfolioRepo::replace_targets`).
+- Validate in the use case before writing anything (quantities >= 0, percents 0..100, sums to 100, no duplicate keys).
 
 ## Rust checklist
 
-- **Ports and adapters**: new persistence needs go through the trait pattern — add the method to `HistoryRepo` (or a new trait) in `domain/repository.rs`, implement it in `infra/sqlite/repo.rs`. Don't reach for a raw `SqlitePool` from inside a usecase.
-- **DI over concretion**: services accept `Arc<dyn Trait>` in their constructor, matching `HistoryService::new` / `AllocationsService::new`. This is what makes them fake-able in tests — keep it up.
+- **Ports and adapters**: new persistence needs go through the trait pattern — add the method to the trait that owns that area in `domain/repository.rs` (or a new small trait), implement it in `infra/sqlite/repo.rs`. Don't reach for a raw `SqlitePool` from inside a usecase.
+- **DI over concretion**: services accept `Arc<dyn Trait>` in their constructor and are built once in `AppState::new`. This is what makes them fake-able in tests — keep it up.
 - **Errors**: repo-layer code returns `RepoResult<T>` (`Result<T, Box<dyn Error + Send + Sync>>`); propagate with `?`. Don't `unwrap()`/`panic!()` outside `main()` setup and tests — a bad price feed or malformed CSV row should surface as an error, not crash the process.
 - **`async_trait`** on trait methods that need to be both `async` and object-safe (`dyn Trait`) — this repo already depends on it, so use it rather than hand-rolling boxed futures.
 - **Keep `domain/models.rs` dumb**: `Serialize`/`Deserialize`/`FromRow` structs only. If you're tempted to add a method with a `if`/computation in it, that logic belongs in `usecases/`.
@@ -55,7 +56,7 @@ Treat both as debt to shrink opportunistically, not a pattern to imitate.
 
 - `wallet_allocations.csv` (repo root) is the editable **source of truth** for wallet definitions. The SQLite DB is an append-only audit/history log fed by `import_wallet_allocations`, never the other way around — don't write code that derives the CSV from the DB.
 - `history_assets.csv`, `history_barca.csv`, `history_totals.csv`, and any `*.bkp` file are generated/audit artifacts. Never hand-edit them, and never "clean them up" as if they were clutter.
-- Check `csv_store.rs` / `csv_history.rs` before adding new CSV logic — there's likely a helper already, and `csv_history.rs` is legacy on purpose.
+- CSV import logic lives in `usecases/wallet_import.rs` — extend it rather than parsing CSV somewhere else.
 - New one-off data scripts follow the `src/bin/` pattern already established, not a new ad-hoc entry point.
 
 ## Go beyond the ask: tests come standard, not as a favor

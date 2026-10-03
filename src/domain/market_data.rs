@@ -1,56 +1,106 @@
-use crate::domain::models::MarketQuote;
+//! Market-data "ports". Each adapter in `infra` is built with its own API
+//! key, so callers only ask for prices and never handle credentials.
+
+use crate::domain::models::{FxRate, MarketQuote};
 use async_trait::async_trait;
-use std::error::Error;
 
-pub type MarketDataResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+pub type MarketDataResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-/// Port for fetching current market data for every crypto asset tracked
-/// (CoinMarketCap's "listings/latest" returns the whole top-N market, so no
-/// symbol list is needed). `infra::coinmarketcap::ReqwestCryptoProvider` is
-/// the production adapter; tests use a fake implementation instead of
-/// hitting the network.
+/// Prices for the whole crypto market (CoinMarketCap's "listings/latest"
+/// returns the top N coins, so no symbol list is needed).
 #[async_trait]
 pub trait CryptoProvider: Send + Sync {
-    async fn fetch_latest(&self, api_key: &str) -> MarketDataResult<Vec<MarketQuote>>;
+    async fn fetch_latest(&self) -> MarketDataResult<Vec<MarketQuote>>;
 }
 
-/// Port for fetching current quotes for an explicit list of symbols — unlike
-/// `CryptoProvider`, brapi/Finnhub have no "top N" listing endpoint, so the
-/// caller must say exactly which symbols it wants priced. Shared by both the
-/// Brazilian-equities (brapi) and US-indices (Finnhub) adapters since the
-/// shape of "give me quotes for these symbols" is identical either way.
+/// Prices for an explicit list of symbols (brapi for Brazilian equities,
+/// Finnhub for US indices). A symbol the provider can't price is left out
+/// of the result rather than failing the whole call.
 #[async_trait]
 pub trait EquityProvider: Send + Sync {
-    async fn fetch_quotes(
-        &self,
-        api_key: &str,
-        symbols: &[String],
-    ) -> MarketDataResult<Vec<MarketQuote>>;
+    async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>>;
 }
 
-/// Fake `EquityProvider` for tests — returns fixed data instead of calling
-/// out to brapi or Finnhub. Shared by both adapters' consumers since the
-/// trait shape is identical either way.
+/// The USD/BRL exchange rate used to convert Brazilian quotes to dollars
+/// (the Banco Central's PTAX selling rate).
+#[async_trait]
+pub trait FxProvider: Send + Sync {
+    async fn fetch_usd_brl(&self) -> MarketDataResult<FxRate>;
+}
+
+/// Test double for both provider traits: always returns the same quotes,
+/// or always fails when built with `failing()`.
 #[cfg(test)]
-pub struct MockEquityProvider {
-    pub data: Vec<MarketQuote>,
+pub struct FakeProvider {
+    quotes: Vec<MarketQuote>,
+    fail: bool,
 }
 
 #[cfg(test)]
-impl MockEquityProvider {
-    pub fn new(data: Vec<MarketQuote>) -> Self {
-        Self { data }
+impl FakeProvider {
+    pub fn with_prices(prices: &[(&str, f64)]) -> Self {
+        let quotes = prices
+            .iter()
+            .map(|(symbol, price)| MarketQuote {
+                symbol: symbol.to_string(),
+                price: *price,
+            })
+            .collect();
+        Self {
+            quotes,
+            fail: false,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self::with_prices(&[])
+    }
+
+    pub fn failing() -> Self {
+        Self {
+            quotes: vec![],
+            fail: true,
+        }
+    }
+
+    fn result(&self) -> MarketDataResult<Vec<MarketQuote>> {
+        if self.fail {
+            return Err("provider is down".into());
+        }
+        Ok(self.quotes.clone())
     }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl EquityProvider for MockEquityProvider {
-    async fn fetch_quotes(
-        &self,
-        _api_key: &str,
-        _symbols: &[String],
-    ) -> MarketDataResult<Vec<MarketQuote>> {
-        Ok(self.data.clone())
+impl CryptoProvider for FakeProvider {
+    async fn fetch_latest(&self) -> MarketDataResult<Vec<MarketQuote>> {
+        self.result()
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl EquityProvider for FakeProvider {
+    async fn fetch_quotes(&self, _symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        self.result()
+    }
+}
+
+/// Test double for `FxProvider`: a fixed rate, or always fails.
+#[cfg(test)]
+pub struct FakeFx(pub Option<f64>);
+
+#[cfg(test)]
+#[async_trait]
+impl FxProvider for FakeFx {
+    async fn fetch_usd_brl(&self) -> MarketDataResult<FxRate> {
+        match self.0 {
+            Some(brl_per_usd) => Ok(FxRate {
+                brl_per_usd,
+                quoted_at: "2026-10-01 13:10:35".to_string(),
+            }),
+            None => Err("PTAX is down".into()),
+        }
     }
 }

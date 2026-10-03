@@ -1,4 +1,4 @@
-use crate::domain::models::User;
+use crate::domain::models::{Role, User};
 use crate::domain::repository::{RefreshTokenRepo, UserRepo};
 use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
@@ -9,7 +9,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub const ACCESS_TOKEN_TTL_MINUTES: i64 = 15;
 pub const REFRESH_TOKEN_TTL_DAYS: i64 = 14;
@@ -40,10 +40,17 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for AuthError {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct AccessTokenClaims {
-    pub sub: String, // user id, as a string (JWT convention)
-    pub role: String,
-    pub exp: usize,
+struct AccessTokenClaims {
+    sub: String, // user id, as a string (JWT convention)
+    role: String,
+    exp: usize,
+}
+
+/// The caller identified by a valid access token.
+#[derive(Debug, Clone, Copy)]
+pub struct Session {
+    pub user_id: i64,
+    pub role: Role,
 }
 
 pub struct LoginResult {
@@ -59,6 +66,14 @@ pub fn hash_password(password: &str) -> Result<String, AuthError> {
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
         .map_err(|e| AuthError::Internal(format!("failed to hash password: {e}")))
+}
+
+/// A real Argon2 hash to check against when the username doesn't exist,
+/// so "unknown user" takes as long as "wrong password" and response time
+/// can't be used to discover which usernames exist.
+fn dummy_password_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| hash_password("dummy-password-for-timing").unwrap_or_default())
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
@@ -86,7 +101,7 @@ fn issue_access_token(user_id: i64, role: &str, secret: &[u8]) -> Result<String,
 }
 
 /// Verifies an access token's signature and expiry, returning its claims.
-pub fn verify_access_token(token: &str, secret: &[u8]) -> Result<AccessTokenClaims, AuthError> {
+fn verify_access_token(token: &str, secret: &[u8]) -> Result<AccessTokenClaims, AuthError> {
     decode::<AccessTokenClaims>(
         token,
         &DecodingKey::from_secret(secret),
@@ -134,13 +149,19 @@ impl AuthService {
         }
     }
 
-    pub async fn login(&self, username: &str, password: &str) -> Result<LoginResult, AuthError> {
-        let user = self
-            .users
-            .find_user_by_username(username)
-            .await?
-            .ok_or(AuthError::InvalidCredentials)?;
+    /// Checks an access token (signature, expiry and claims).
+    pub fn authenticate(&self, access_token: &str) -> Result<Session, AuthError> {
+        let claims = verify_access_token(access_token, &self.jwt_secret)?;
+        let user_id = claims.sub.parse().map_err(|_| AuthError::InvalidToken)?;
+        let role = Role::parse(&claims.role).ok_or(AuthError::InvalidToken)?;
+        Ok(Session { user_id, role })
+    }
 
+    pub async fn login(&self, username: &str, password: &str) -> Result<LoginResult, AuthError> {
+        let Some(user) = self.users.find_user_by_username(username).await? else {
+            verify_password(password, dummy_password_hash());
+            return Err(AuthError::InvalidCredentials);
+        };
         if !verify_password(password, &user.password_hash) {
             return Err(AuthError::InvalidCredentials);
         }
@@ -164,7 +185,9 @@ impl AuthService {
     }
 
     /// Exchanges a still-valid refresh token for a new access token, without
-    /// requiring the password again.
+    /// requiring the password again. The refresh token itself is reusable
+    /// until it expires or the user logs out (no rotation: several browser
+    /// tabs refreshing at once would otherwise log each other out).
     pub async fn refresh(&self, refresh_token: &str) -> Result<String, AuthError> {
         let stored = self
             .refresh_tokens
@@ -269,5 +292,80 @@ mod tests {
     fn hash_token_is_deterministic() {
         let token = generate_refresh_token();
         assert_eq!(hash_token(&token), hash_token(&token));
+    }
+
+    mod service {
+        use super::super::*;
+        use crate::domain::repository::NewUser;
+        use crate::infra::sqlite::test_repo;
+
+        const SECRET: &[u8] = b"test-secret-of-sufficient-length";
+
+        async fn service_with_user(role: &str) -> AuthService {
+            let repo = test_repo().await;
+            let hash = hash_password("right-password").unwrap();
+            repo.create_user(NewUser {
+                username: "alice",
+                password_hash: &hash,
+                role,
+                email: "alice@example.com",
+                phone: None,
+            })
+            .await
+            .unwrap();
+            AuthService::new(repo.clone(), repo, Arc::new(SECRET.to_vec()))
+        }
+
+        #[tokio::test]
+        async fn login_issues_tokens_that_authenticate_as_that_user() {
+            let service = service_with_user("manager").await;
+            let result = service.login("alice", "right-password").await.unwrap();
+
+            let session = service.authenticate(&result.access_token).unwrap();
+            assert_eq!(Some(session.user_id), result.user.id);
+            assert_eq!(session.role, Role::Manager);
+        }
+
+        #[tokio::test]
+        async fn login_gives_the_same_error_for_unknown_user_and_wrong_password() {
+            let service = service_with_user("user").await;
+            assert!(matches!(
+                service.login("alice", "wrong").await,
+                Err(AuthError::InvalidCredentials)
+            ));
+            assert!(matches!(
+                service.login("nobody", "right-password").await,
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+
+        #[tokio::test]
+        async fn a_refresh_token_stops_working_after_logout() {
+            let service = service_with_user("user").await;
+            let result = service.login("alice", "right-password").await.unwrap();
+
+            let access = service.refresh(&result.refresh_token).await.unwrap();
+            assert!(service.authenticate(&access).is_ok());
+
+            service.logout(&result.refresh_token).await.unwrap();
+            assert!(matches!(
+                service.refresh(&result.refresh_token).await,
+                Err(AuthError::InvalidToken)
+            ));
+            assert!(matches!(
+                service.refresh("never-issued").await,
+                Err(AuthError::InvalidToken)
+            ));
+        }
+
+        #[tokio::test]
+        async fn authenticate_rejects_a_token_with_an_unknown_role() {
+            let service = service_with_user("user").await;
+            let token = issue_access_token(1, "superuser", SECRET).unwrap();
+            assert!(matches!(
+                service.authenticate(&token),
+                Err(AuthError::InvalidToken)
+            ));
+        }
     }
 }
