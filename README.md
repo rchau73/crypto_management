@@ -130,7 +130,7 @@ Three fixed roles, checked with a plain rank comparison (`Admin > Manager > User
 - **CORS**: credentialed (cookie-carrying) requests can't use a wildcard origin — `FRONTEND_ORIGIN` must name the frontend's exact origin.
 - **Deliberately not used**: no API gateway (Kong et al.) — that solves problems (routing across many services, centralizing auth for many teams) this single-binary, handful-of-users app doesn't have, and would add a second stateful service to operate and patch for no benefit here. If you outgrow this, a lightweight reverse proxy (Caddy, for automatic HTTPS) or a perimeter layer (Cloudflare Tunnel + Access, useful specifically for secure remote/mobile access without opening an inbound port) are the right next steps — not a gateway.
 
-Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS).
+Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS). Optional: `COOKIE_PREFIX` (default `cm`) names the auth cookies (`cm_access_token`, `cm_refresh_token`) — give each app on the same host its own prefix, since browsers share cookies across ports and identical names make the apps log each other out.
 
 ---
 
@@ -165,7 +165,7 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
    - `BRAPI_API_KEY`, `FINNHUB_API_KEY`: optional — leave the placeholder values if you're not tracking `br-equities`/`us-indices` assets yet; nothing breaks, those providers just aren't called.
    - `CURRENT_MARKET`: which BARCA target profile is active (`BullMarket` or `BearMarket` — see [BARCA targets](#editable-portfolio-and-barca-targets) below). Every `barca_targets` row belongs to exactly one profile; there's no fallback between them.
    - `DATABASE_URL`: defaults to `sqlite://./data/crypto.db` if unset — no need to set this for local dev.
-   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`: see [Authentication & Authorization](#authentication--authorization) — all required (the three `ADMIN_*` vars must be set together, or no bootstrap admin is created and you'll have no way to log in).
+   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`, `COOKIE_PREFIX`: see [Authentication & Authorization](#authentication--authorization) — all required (the three `ADMIN_*` vars must be set together, or no bootstrap admin is created and you'll have no way to log in).
 
 3. **Prepare your wallet allocations file (optional — only needed to seed your very first assets):**
 
