@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { downloadWalletCsv, fetchAllocations, uploadWalletCsv } from "../api/client";
 import { saveFile } from "../utils/saveFile";
+import { describeImportSummary } from "../utils/importSummary";
 
 // Owns the "live allocations" data: the per-asset/per-group/per-BARCA
 // breakdown from /api/allocations, plus the CSV import/export actions.
@@ -43,7 +44,7 @@ export function useAllocations() {
     setImportError("");
     try {
       const data = await uploadWalletCsv(file);
-      setImportStatus(`Imported ${data.imported ?? 0} wallet rows from CSV`);
+      setImportStatus(describeImportSummary(data));
       await refresh();
     } catch (err) {
       // A bad file comes back as a 400 whose message is written for a human.

@@ -496,7 +496,11 @@ async fn csv_upload_needs_manager_and_imports_new_positions() {
     let manager = login(&app, "manager").await;
     let (status, body) = send(&app, csv_upload(&manager, "wallet.csv", NEW_ASSET_CSV)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["imported"], 1);
+    assert_eq!(body["positions_added"], 1);
+    assert_eq!(body["sources_added"], 1);
+    // The seeded BTC (2 sources) and ETH aren't in this CSV: reported, not zeroed.
+    assert_eq!(body["missing_from_csv"].as_array().unwrap().len(), 3);
+    assert_eq!(body["missing_from_csv"][0]["symbol"], "BTC");
 }
 
 #[tokio::test]
