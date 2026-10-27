@@ -130,7 +130,7 @@ Three fixed roles, checked with a plain rank comparison (`Admin > Manager > User
 - **CORS**: credentialed (cookie-carrying) requests can't use a wildcard origin — `FRONTEND_ORIGIN` must name the frontend's exact origin.
 - **Deliberately not used**: no API gateway (Kong et al.) — that solves problems (routing across many services, centralizing auth for many teams) this single-binary, handful-of-users app doesn't have, and would add a second stateful service to operate and patch for no benefit here. If you outgrow this, a lightweight reverse proxy (Caddy, for automatic HTTPS) or a perimeter layer (Cloudflare Tunnel + Access, useful specifically for secure remote/mobile access without opening an inbound port) are the right next steps — not a gateway.
 
-Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS).
+Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl rand -hex 32`), `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE` (set to `true` once served over HTTPS). Optional: `COOKIE_PREFIX` (default `cm`) names the auth cookies (`cm_access_token`, `cm_refresh_token`) — give each app on the same host its own prefix, since browsers share cookies across ports and identical names make the apps log each other out.
 
 ---
 
@@ -165,7 +165,7 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
    - `BRAPI_API_KEY`, `FINNHUB_API_KEY`: optional — leave the placeholder values if you're not tracking `br-equities`/`us-indices` assets yet; nothing breaks, those providers just aren't called.
    - `CURRENT_MARKET`: which BARCA target profile is active (`BullMarket` or `BearMarket` — see [BARCA targets](#editable-portfolio-and-barca-targets) below). Every `barca_targets` row belongs to exactly one profile; there's no fallback between them.
    - `DATABASE_URL`: defaults to `sqlite://./data/crypto.db` if unset — no need to set this for local dev.
-   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`: see [Authentication & Authorization](#authentication--authorization) — all required (the three `ADMIN_*` vars must be set together, or no bootstrap admin is created and you'll have no way to log in).
+   - `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN`, `COOKIE_SECURE`, `COOKIE_PREFIX`: see [Authentication & Authorization](#authentication--authorization) — all required (the three `ADMIN_*` vars must be set together, or no bootstrap admin is created and you'll have no way to log in).
 
 3. **Prepare your wallet allocations file (optional — only needed to seed your very first assets):**
 
@@ -196,7 +196,7 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
 
    You should see `Database ready, migrations applied` and `Listening addr=127.0.0.1:3001` in the logs (change the address with `BIND_ADDR`, the log level with `RUST_LOG`). Startup stops with a clear error if a required setting is missing or a migration fails. New files under `migrations/` trigger a rebuild automatically (`build.rs`).
 
-   To manually re-import the CSV later (e.g. to seed a newly-added asset — this never overwrites an existing DB row, see [below](#editable-portfolio-and-barca-targets)):
+   To manually re-import the CSV later (quantities come from the CSV, targets of existing positions stay as in the DB, see [below](#manually-re-importing-the-csv)):
    - CLI: `cargo run --bin import_wallet_allocations -- wallet_allocations.csv`
    - UI: click **Import Wallet CSV** in the header (Manager+ only).
 
@@ -259,7 +259,7 @@ Once you have data, the DB — not the CSV — is authoritative:
 - **Portfolio Targets** tab: one editable row per asset (symbol, group, BARCA, asset class, target %). Quantity/notes are read-only here (they come from CSV import / ledger history, to avoid a whole class of double-counting bugs from mixing "edit a target" with "edit a ledger") — add a brand-new asset via **+ Add Asset** to give it a starting quantity. The BARCA/Group columns suggest existing values (to avoid typos) but accept a new one too.
 - **BARCA Targets** tab: one editable row per BARCA bucket (e.g. "Base", "Altcoins", or a new one like "IBOVE") for the market profile selected in the dropdown (`BullMarket`/`BearMarket`, matching `CURRENT_MARKET`). A bucket only applies to the market it's saved under — add it to both if it should always be active.
 - Both tabs share the same pattern: edit the table, a single **Save All** button submits the whole set atomically, and target percentages across the set must sum to exactly 100% or the save is rejected client- and server-side.
-- Re-importing the CSV (manually, or the automatic empty-DB seed) never overwrites an existing row — it only inserts symbols/targets that don't already exist yet.
+- Re-importing the CSV (manually, or the automatic empty-DB seed) never overwrites an existing target — the CSV target is only used for brand-new positions. Quantities, on the other hand, come from the CSV (see below).
 
 ### Manually re-importing the CSV
 
@@ -267,7 +267,7 @@ Once you have data, the DB — not the CSV — is authoritative:
 cargo run --bin import_wallet_allocations -- wallet_allocations.csv
 ```
 
-Uses the same `WalletImportService` as the upload button: every row is validated first (a bad row aborts the whole import, with line numbers), and a ledger row plus a `portfolio_targets` row are added only for `(symbol, group, barca, asset_class)` combinations not already in the DB. Nothing is ever deleted. Inspect current values with:
+Uses the same `WalletImportService` as the upload button: every row is validated first (a bad row aborts the whole import, with line numbers), Then, per funding source (`symbol, group, barca, asset_class` + `notes`/`comments`): a new source or a changed quantity gets a new ledger row, an unchanged one is skipped (re-importing the same file writes nothing). A brand-new position also gets its CSV target; an existing one keeps its DB target and a differing CSV target is only reported. Sources in the DB that the CSV doesn't mention are reported, never zeroed, so a partial CSV is safe. Nothing is ever deleted, and the import prints/returns a summary of all of the above. Inspect current values with:
 
 ```bash
 sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
@@ -328,7 +328,7 @@ The frontend dashboard tab uses these APIs (with optional period bucketing) to p
 
 ## CSV vs. DB responsibilities
 
-The DB is authoritative once it has data — `wallet_allocations.csv` only seeds brand-new `(symbol, group, barca, asset_class)` combinations that don't already exist (via the automatic empty-DB seed on first boot, or a manual re-import), and never overwrites an existing row. Ongoing edits happen in the app itself: `target_percent` lives in the mutable `portfolio_targets`/`barca_targets` tables (edited via the Portfolio Targets/BARCA Targets tabs, see [above](#editable-portfolio-and-barca-targets)), and quantity/notes live in the append-only `wallet_allocations` ledger (updated by CSV import or, for a brand-new asset, the Portfolio Targets tab's "+ Add Asset"). See [Architecture](#architecture) for how the pieces fit together.
+Targets: the DB is authoritative once it has data — `wallet_allocations.csv` only sets the target of brand-new `(symbol, group, barca, asset_class)` combinations. Quantities: the CSV wins — a re-import appends a ledger row for every source whose quantity changed or that is new. Ongoing edits happen in the app itself: `target_percent` lives in the mutable `portfolio_targets`/`barca_targets` tables (edited via the Portfolio Targets/BARCA Targets tabs, see [above](#editable-portfolio-and-barca-targets)), and quantity/notes live in the append-only `wallet_allocations` ledger (updated by CSV import or, for a brand-new asset, the Portfolio Targets tab's "+ Add Asset"). See [Architecture](#architecture) for how the pieces fit together.
 
 
 

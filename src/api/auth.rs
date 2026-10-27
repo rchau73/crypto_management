@@ -14,8 +14,33 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-const ACCESS_COOKIE: &str = "access_token";
-const REFRESH_COOKIE: &str = "refresh_token";
+/// Names of the two auth cookies. Browsers share cookies between every
+/// port on the same host, so each app gets its own prefix (`COOKIE_PREFIX`);
+/// otherwise logging into another local app with the same cookie names
+/// overwrites — and so ends — this app's session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CookieNames {
+    pub access: String,
+    pub refresh: String,
+}
+
+impl CookieNames {
+    /// `"cm"` -> `cm_access_token` / `cm_refresh_token`; an empty prefix
+    /// keeps the plain `access_token` / `refresh_token` names.
+    pub fn new(prefix: &str) -> Self {
+        let name = |base: &str| {
+            if prefix.is_empty() {
+                base.to_string()
+            } else {
+                format!("{prefix}_{base}")
+            }
+        };
+        Self {
+            access: name("access_token"),
+            refresh: name("refresh_token"),
+        }
+    }
+}
 
 /// The logged-in caller. Adding this as a handler parameter is what makes
 /// a route require login: the request is rejected with 401 before the
@@ -43,7 +68,7 @@ impl FromRequestParts<AppState> for CurrentUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> ApiResult<Self> {
         let jar = CookieJar::from_headers(&parts.headers);
         let token = jar
-            .get(ACCESS_COOKIE)
+            .get(&state.cookie_names.access)
             .ok_or_else(|| ApiError::unauthorized("Not logged in"))?;
         let session = state
             .auth
@@ -57,7 +82,7 @@ impl FromRequestParts<AppState> for CurrentUser {
 }
 
 fn cookie(
-    name: &'static str,
+    name: String,
     value: String,
     path: &'static str,
     max_age_seconds: i64,
@@ -72,24 +97,24 @@ fn cookie(
         .build()
 }
 
-fn access_cookie(token: String, secure: bool) -> Cookie<'static> {
+fn access_cookie(state: &AppState, token: String) -> Cookie<'static> {
     cookie(
-        ACCESS_COOKIE,
+        state.cookie_names.access.clone(),
         token,
         "/",
         ACCESS_TOKEN_TTL_MINUTES * 60,
-        secure,
+        state.cookie_secure,
     )
 }
 
-fn refresh_cookie(token: String, secure: bool) -> Cookie<'static> {
+fn refresh_cookie(state: &AppState, token: String) -> Cookie<'static> {
     // Only sent to /api/auth/*, where it is needed.
     cookie(
-        REFRESH_COOKIE,
+        state.cookie_names.refresh.clone(),
         token,
         "/api/auth",
         REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60,
-        secure,
+        state.cookie_secure,
     )
 }
 
@@ -119,21 +144,22 @@ pub async fn login(
         })?;
     info!("Login succeeded");
     let jar = jar
-        .add(access_cookie(result.access_token, state.cookie_secure))
-        .add(refresh_cookie(result.refresh_token, state.cookie_secure));
+        .add(access_cookie(&state, result.access_token))
+        .add(refresh_cookie(&state, result.refresh_token));
     Ok((jar, Json(profile(&result.user))))
 }
 
 #[tracing::instrument(skip_all)]
 pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> (CookieJar, Json<Value>) {
-    if let Some(token) = jar.get(REFRESH_COOKIE) {
+    let names = &state.cookie_names;
+    if let Some(token) = jar.get(&names.refresh) {
         if let Err(e) = state.auth.logout(token.value()).await {
             tracing::warn!(error = %e, "Failed to revoke refresh token on logout");
         }
     }
     let jar = jar
-        .remove(Cookie::build(ACCESS_COOKIE).path("/"))
-        .remove(Cookie::build(REFRESH_COOKIE).path("/api/auth"));
+        .remove(Cookie::build(names.access.clone()).path("/"))
+        .remove(Cookie::build(names.refresh.clone()).path("/api/auth"));
     (jar, Json(json!({ "ok": true })))
 }
 
@@ -143,13 +169,13 @@ pub async fn refresh(
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, Json<Value>)> {
     let token = jar
-        .get(REFRESH_COOKIE)
+        .get(&state.cookie_names.refresh)
         .ok_or_else(|| ApiError::unauthorized("Not logged in"))?;
     let access_token = state.auth.refresh(token.value()).await.map_err(|e| {
         tracing::warn!(error = %e, "Refresh failed");
         ApiError::unauthorized("Session expired, please log in again")
     })?;
-    let jar = jar.add(access_cookie(access_token, state.cookie_secure));
+    let jar = jar.add(access_cookie(&state, access_token));
     Ok((jar, Json(json!({ "ok": true }))))
 }
 
@@ -158,5 +184,24 @@ pub async fn me(current: CurrentUser, State(state): State<AppState>) -> ApiResul
         Ok(user) => Ok(Json(profile(&user))),
         Err(UserServiceError::NotFound) => Err(ApiError::unauthorized("User no longer exists")),
         Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_names_are_prefixed() {
+        let names = CookieNames::new("cm");
+        assert_eq!(names.access, "cm_access_token");
+        assert_eq!(names.refresh, "cm_refresh_token");
+    }
+
+    #[test]
+    fn an_empty_prefix_keeps_the_plain_names() {
+        let names = CookieNames::new("");
+        assert_eq!(names.access, "access_token");
+        assert_eq!(names.refresh, "refresh_token");
     }
 }

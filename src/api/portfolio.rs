@@ -7,6 +7,7 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::domain::models::{AllocationReport, BarcaTarget, NewBarcaTarget, Role, WalletPosition};
 use crate::usecases::history_service::HistoryLevel;
 use crate::usecases::targets_service::{QuantityCorrection, TargetRow};
+use crate::usecases::wallet_import::ImportSummary;
 use axum::Json;
 use axum::extract::{Multipart, Query, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
@@ -159,12 +160,12 @@ pub async fn upload_wallet_csv(
     current: CurrentUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Json<ImportSummary>> {
     current.require(Role::Manager)?;
     let csv = read_csv_upload(&mut multipart).await?;
-    let imported = state.wallet_import.import_csv(csv.as_slice()).await?;
-    info!(imported, bytes = csv.len(), "Imported wallet CSV upload");
-    Ok(Json(json!({ "imported": imported })))
+    let summary = state.wallet_import.import_csv(csv.as_slice()).await?;
+    info!(bytes = csv.len(), "Imported wallet CSV upload");
+    Ok(Json(summary))
 }
 
 /// "Export Wallet CSV": the wallet in the import format, as a download.

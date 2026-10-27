@@ -66,7 +66,7 @@ impl AssetClass {
 /// Identifies one displayed portfolio row. Missing group/barca are stored
 /// as NULL in the ledger but compared as "" everywhere, matching the
 /// `COALESCE(..., '')` in the `wallet_allocations_current` view.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct PositionKey {
     pub symbol: String,
     pub group_name: String,
@@ -130,6 +130,17 @@ pub struct PositionSource {
     pub asset_class: String,
     pub current_quantity: f64,
     pub notes: Option<String>,
+}
+
+impl PositionSource {
+    pub fn key(&self) -> PositionKey {
+        PositionKey {
+            symbol: self.symbol.clone(),
+            group_name: self.group_name.clone().unwrap_or_default(),
+            barca: self.barca.clone().unwrap_or_default(),
+            asset_class: self.asset_class.clone(),
+        }
+    }
 }
 
 /// A target percent for one position key (the `portfolio_targets` table).

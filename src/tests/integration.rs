@@ -192,8 +192,66 @@ async fn protected_routes_require_a_session() {
         let (status, _) = send(&app, get(uri, "")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
     }
-    let (status, _) = send(&app, get("/api/allocations", "access_token=forged")).await;
+    let (status, _) = send(&app, get("/api/allocations", "cm_access_token=forged")).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_sets_cookies_named_with_the_configured_prefix() {
+    let app = default_app().await;
+    let cookie = login(&app, "viewer").await;
+    // The cookie jar doesn't keep insertion order, so compare sorted.
+    let mut names: Vec<_> = cookie
+        .split("; ")
+        .filter_map(|pair| pair.split('=').next())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["cm_access_token", "cm_refresh_token"]);
+}
+
+/// Another local app (same host, different port) using the plain cookie
+/// names must neither authenticate here nor break this app's session.
+#[tokio::test]
+async fn another_apps_cookies_are_ignored() {
+    let app = default_app().await;
+
+    let foreign_only = "access_token=other-app; refresh_token=other-app";
+    let (status, _) = send(&app, get("/api/auth/me", foreign_only)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let both = format!("{foreign_only}; {}", login(&app, "viewer").await);
+    let (status, me) = send(&app, get("/api/auth/me", &both)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["username"], "viewer");
+
+    let refresh = Request::builder()
+        .method("POST")
+        .uri("/api/auth/refresh")
+        .header(COOKIE, &both)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, refresh).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn logout_clears_only_this_apps_cookies() {
+    let app = default_app().await;
+    let cookie = login(&app, "viewer").await;
+    let logout = Request::builder()
+        .method("POST")
+        .uri("/api/auth/logout")
+        .header(COOKIE, format!("access_token=other-app; {cookie}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(logout).await.unwrap();
+    let mut cleared: Vec<_> = response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok()?.split('=').next().map(str::to_string))
+        .collect();
+    cleared.sort();
+    assert_eq!(cleared, ["cm_access_token", "cm_refresh_token"]);
 }
 
 #[tokio::test]
@@ -438,7 +496,11 @@ async fn csv_upload_needs_manager_and_imports_new_positions() {
     let manager = login(&app, "manager").await;
     let (status, body) = send(&app, csv_upload(&manager, "wallet.csv", NEW_ASSET_CSV)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["imported"], 1);
+    assert_eq!(body["positions_added"], 1);
+    assert_eq!(body["sources_added"], 1);
+    // The seeded BTC (2 sources) and ETH aren't in this CSV: reported, not zeroed.
+    assert_eq!(body["missing_from_csv"].as_array().unwrap().len(), 3);
+    assert_eq!(body["missing_from_csv"][0]["symbol"], "BTC");
 }
 
 #[tokio::test]

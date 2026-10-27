@@ -18,6 +18,10 @@ pub struct AppConfig {
     pub jwt_secret: Vec<u8>,
     /// Set `Secure` on cookies (true once served over HTTPS).
     pub cookie_secure: bool,
+    /// Prepended to the auth cookie names (`cm` -> `cm_access_token`).
+    /// Browsers share cookies across ports, so two apps on `localhost`
+    /// with the same cookie names log each other out.
+    pub cookie_prefix: String,
     /// Active BARCA target profile ("BullMarket", "BearMarket"...).
     pub current_market: String,
     pub coinmarketcap_api_key: String,
@@ -33,6 +37,18 @@ pub struct AppConfig {
 
 fn optional(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// Cookie names may only use a safe subset of characters; reject anything
+/// else at startup rather than emitting a cookie the browser ignores.
+fn cookie_prefix(raw: &str) -> anyhow::Result<String> {
+    let valid = raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !valid {
+        bail!("COOKIE_PREFIX may only contain letters, digits, '_' or '-': {raw:?}");
+    }
+    Ok(raw.to_string())
 }
 
 fn required(name: &str, hint: &str) -> anyhow::Result<String> {
@@ -66,6 +82,7 @@ impl AppConfig {
             frontend_origin: optional("FRONTEND_ORIGIN", "http://localhost:5173"),
             jwt_secret: required("JWT_SECRET", "e.g. `openssl rand -hex 32`")?.into_bytes(),
             cookie_secure: optional("COOKIE_SECURE", "false") == "true",
+            cookie_prefix: cookie_prefix(&optional("COOKIE_PREFIX", "cm"))?,
             current_market: optional("CURRENT_MARKET", "BullMarket"),
             coinmarketcap_api_key: required("API_KEY", "your CoinMarketCap API key")?,
             brapi_api_key: optional("BRAPI_API_KEY", ""),
@@ -84,12 +101,31 @@ impl AppConfig {
             frontend_origin: "http://localhost:5173".to_string(),
             jwt_secret: b"test-only-jwt-secret-do-not-use-in-prod".to_vec(),
             cookie_secure: false,
+            cookie_prefix: "cm".to_string(),
             current_market: "BullMarket".to_string(),
             coinmarketcap_api_key: String::new(),
             brapi_api_key: String::new(),
             finnhub_api_key: String::new(),
             wallet_seed_path: String::new(),
             admin_seed: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_prefix_accepts_safe_names_and_empty() {
+        assert_eq!(cookie_prefix("crypto-mgmt_2").unwrap(), "crypto-mgmt_2");
+        assert_eq!(cookie_prefix("").unwrap(), "");
+    }
+
+    #[test]
+    fn cookie_prefix_rejects_characters_invalid_in_a_cookie_name() {
+        for bad in ["a b", "a;b", "a=b", "café", "a,b"] {
+            assert!(cookie_prefix(bad).is_err(), "{bad:?} should be rejected");
         }
     }
 }

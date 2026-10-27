@@ -6,6 +6,7 @@ pub mod error;
 pub mod portfolio;
 pub mod users;
 
+use crate::api::auth::CookieNames;
 use crate::config::AppConfig;
 use crate::infra::sqlite::SqliteRepo;
 use crate::usecases::allocations_service::{AllocationsService, MarketProviders};
@@ -33,6 +34,7 @@ pub struct AppState {
     pub auth: Arc<AuthService>,
     pub users: Arc<UserService>,
     pub cookie_secure: bool,
+    pub cookie_names: Arc<CookieNames>,
 }
 
 impl AppState {
@@ -59,6 +61,7 @@ impl AppState {
             )),
             users: Arc::new(UserService::new(repo)),
             cookie_secure: config.cookie_secure,
+            cookie_names: Arc::new(CookieNames::new(&config.cookie_prefix)),
         }
     }
 }
