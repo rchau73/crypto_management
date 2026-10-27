@@ -14,8 +14,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-const ACCESS_COOKIE: &str = "access_token";
-const REFRESH_COOKIE: &str = "refresh_token";
+// App-prefixed: a browser keeps cookies per host, not per port, so on
+// localhost a plain `access_token` was overwritten by any other local app
+// using the same name (the optionsBot monitors did), signing this one out.
+const ACCESS_COOKIE: &str = "cm_access_token";
+const REFRESH_COOKIE: &str = "cm_refresh_token";
 
 /// The logged-in caller. Adding this as a handler parameter is what makes
 /// a route require login: the request is rejected with 401 before the

@@ -73,7 +73,7 @@ Source: [`docs/sequence-allocations.mmd`](docs/sequence-allocations.mmd)
 
 ![Sequence diagram for GET /api/allocations, from the Axum handler through AllocationsService, the CryptoProvider and AllocationStore ports, compute_allocations, and snapshot persistence](docs/sequence-allocations.png)
 
-Every route above requires a valid `access_token` cookie — see the login handshake below for how that cookie gets there.
+Every route above requires a valid `cm_access_token` cookie (app-prefixed, so other apps on localhost cannot overwrite it) — see the login handshake below for how that cookie gets there.
 
 ### Sequence diagram: the login handshake
 

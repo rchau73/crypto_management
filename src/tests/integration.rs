@@ -181,6 +181,27 @@ async fn btc_quantity(app: &Router, cookie: &str) -> f64 {
 // --- authentication --------------------------------------------------------
 
 #[tokio::test]
+async fn session_cookies_are_app_prefixed_so_other_local_apps_cannot_overwrite_them() {
+    // A browser keeps cookies per host, not per port: a plain `access_token`
+    // from another app on localhost replaced this one and signed it out.
+    let app = default_app().await;
+    let cookie = login(&app, "manager").await;
+    let names: Vec<&str> = cookie
+        .split("; ")
+        .filter_map(|c| c.split('=').next())
+        .collect();
+    assert!(names.contains(&"cm_access_token"), "{names:?}");
+    assert!(names.contains(&"cm_refresh_token"), "{names:?}");
+    assert!(!names.contains(&"access_token"), "{names:?}");
+    let (status, _) = send(&app, get("/api/allocations", "access_token=anything")).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the plain name is not read"
+    );
+}
+
+#[tokio::test]
 async fn protected_routes_require_a_session() {
     let app = default_app().await;
     for uri in [
@@ -192,7 +213,7 @@ async fn protected_routes_require_a_session() {
         let (status, _) = send(&app, get(uri, "")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
     }
-    let (status, _) = send(&app, get("/api/allocations", "access_token=forged")).await;
+    let (status, _) = send(&app, get("/api/allocations", "cm_access_token=forged")).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
