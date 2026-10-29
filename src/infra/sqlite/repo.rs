@@ -212,9 +212,9 @@ impl SnapshotRepo for SqliteRepo {
             .execute(&mut *tx)
             .await?;
 
-        // `INSERT OR IGNORE`: history_assets is UNIQUE(timestamp, symbol),
-        // so a symbol held in two groups keeps only its first row per
-        // snapshot (a known limitation of that table's original schema).
+        // history_assets is UNIQUE(timestamp, symbol, group_name, barca)
+        // since migration 0012, so a symbol held in two groups gets one row
+        // per group. `OR IGNORE` only guards against a repeated snapshot.
         for a in &report.per_asset {
             sqlx::query(
                 "INSERT OR IGNORE INTO history_assets \
@@ -282,7 +282,7 @@ impl SnapshotRepo for SqliteRepo {
         let rows = sqlx::query_as(
             "SELECT timestamp, symbol, group_name, barca, price, current_quantity, value, \
                     target_percent, current_percent, deviation_percent, value_deviation \
-             FROM asset_variance_history ORDER BY timestamp, symbol",
+             FROM asset_variance_history ORDER BY timestamp, symbol, group_name, barca",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -751,6 +751,49 @@ mod tests {
         let assets = repo.fetch_asset_history().await.unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].symbol, "BTC");
+    }
+
+    #[tokio::test]
+    async fn record_snapshot_keeps_a_symbol_held_in_two_groups() {
+        // Regression: history_assets was UNIQUE(timestamp, symbol), so BTC in
+        // Holding was silently dropped because BTC in DeFi came first.
+        let repo = test_repo().await;
+        let btc = |group: &str, value: f64| AssetAllocation {
+            symbol: "BTC".into(),
+            group: group.into(),
+            barca: "Base".into(),
+            price: 10.0,
+            current_quantity: value / 10.0,
+            value,
+            target_percent: 0.0,
+            current_percent: 0.0,
+            deviation: 0.0,
+        };
+        repo.record_snapshot(&AllocationSnapshot {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            report: AllocationReport {
+                total_value: 30.0,
+                per_asset: vec![btc("DeFi", 10.0), btc("Holding", 20.0)],
+                ..Default::default()
+            },
+            asset_notes: HashMap::new(),
+        })
+        .await
+        .unwrap();
+
+        let assets = repo.fetch_asset_history().await.unwrap();
+        let rows: Vec<_> = assets
+            .iter()
+            .map(|a| (a.group_name.as_deref(), a.value))
+            .collect();
+        assert_eq!(
+            rows,
+            [(Some("DeFi"), Some(10.0)), (Some("Holding"), Some(20.0))]
+        );
+        assert_eq!(
+            repo.fetch_latest_prices().await.unwrap(),
+            HashMap::from([("BTC".to_string(), 10.0)])
+        );
     }
 
     #[tokio::test]

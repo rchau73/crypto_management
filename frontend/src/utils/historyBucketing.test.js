@@ -68,6 +68,19 @@ describe("groupHistoryByPeriod", () => {
     expect(data[0].ETH).toBe(50);
   });
 
+  it("sums a symbol held in several groups within the same snapshot", () => {
+    const parsed = [
+      { ts: "2024-01-01T00:00:00Z", symbol: "BTC", value: 100 }, // Holding
+      { ts: "2024-01-01T00:00:00Z", symbol: "BTC", value: 40 }, // DeFi
+      { ts: "2024-01-01T01:00:00Z", symbol: "ETH", value: 10 },
+      { ts: "2024-01-01T02:00:00Z", symbol: "ETH", value: 20 },
+      { ts: "2024-01-01T02:00:00Z", symbol: "ETH", value: 5 },
+    ];
+    const { data } = groupHistoryByPeriod("assets", parsed, "daily");
+    expect(data[0].BTC).toBe(140);
+    expect(data[0].ETH).toBe(25); // only the latest snapshot, summed
+  });
+
   it("skips rows with an unparsable timestamp instead of throwing", () => {
     const parsed = [{ ts: "not-a-date", value: 1 }];
     expect(groupHistoryByPeriod("totals", parsed, "daily").data).toEqual([]);

@@ -70,7 +70,8 @@ export function bucketKeyFor(brtDate, granularity) {
 // Group parsed rows into period buckets. For "assets"/"barca"/"groups" each
 // bucket keeps the latest value per series (symbol/barca/group name) seen in
 // that period; for "totals" each bucket keeps the single latest snapshot.
-// `series` is empty for "totals".
+// `series` is empty for "totals". A symbol held in several groups has one row
+// per group in the same snapshot; those are summed into one "BTC" value.
 export function groupHistoryByPeriod(level, parsedRows, granularity) {
   const groups = {};
   const isMultiSeries = level === "assets" || level === "barca" || level === "groups";
@@ -86,6 +87,8 @@ export function groupHistoryByPeriod(level, parsedRows, granularity) {
       const existing = groups[key][seriesName];
       if (!existing || dayjs(item.ts).isAfter(dayjs(existing.ts))) {
         groups[key][seriesName] = { ts: item.ts, value: item.value };
+      } else if (dayjs(item.ts).isSame(dayjs(existing.ts))) {
+        existing.value += item.value;
       }
       if (!groups[key].ts || dayjs(item.ts).isAfter(dayjs(groups[key].ts))) {
         groups[key].ts = item.ts;
