@@ -321,6 +321,134 @@ describe("PortfolioTargetsTab", () => {
     });
   });
 
+  describe("filters and sorting", () => {
+    const threeRows = [
+      { symbol: "BTC", group_name: "Holding", barca: "Base", asset_class: "crypto", target_percent: 60, current_quantity: 1, notes: "Binance | Ledger", source_count: 2 },
+      { symbol: "ETH", group_name: "DeFi", barca: "Altcoins", asset_class: "crypto", target_percent: 30, current_quantity: 2, notes: "Ledger", source_count: 1 },
+      { symbol: "ADA", group_name: "Holding", barca: "Altcoins", asset_class: "crypto", target_percent: 10, current_quantity: 3, notes: "Binance", source_count: 1 },
+    ];
+    // Symbol inputs of the body rows, top to bottom.
+    const shownSymbols = () =>
+      screen
+        .getAllByRole("row")
+        .slice(2) // header + filter rows
+        .map((row) => within(row).queryAllByRole("textbox")[0]?.value)
+        .filter((value) => value !== undefined);
+
+    it("filters a column by the text typed under its header", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+
+      await user.type(screen.getByLabelText("Filter Notes"), "binance");
+
+      expect(shownSymbols()).toEqual(["BTC", "ADA"]);
+      expect(screen.getByText(/Showing 2 of 3 rows · filtered sum 70.00%/)).toBeInTheDocument();
+    });
+
+    it("Clear removes every filter", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.type(screen.getByLabelText("Filter Group"), "defi");
+      expect(shownSymbols()).toEqual(["ETH"]);
+
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+
+      expect(shownSymbols()).toEqual(["BTC", "ETH", "ADA"]);
+      expect(screen.getByLabelText("Filter Group")).toHaveValue("");
+    });
+
+    it("shows a message when no row matches", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.type(screen.getByLabelText("Filter Symbol"), "XYZ");
+      expect(screen.getByText("No rows match the filters.")).toBeInTheDocument();
+    });
+
+    it("sorts by a column, toggling direction on a second click", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+
+      await user.click(screen.getByRole("button", { name: "Symbol" }));
+      expect(shownSymbols()).toEqual(["ADA", "BTC", "ETH"]);
+
+      await user.click(screen.getByRole("button", { name: /Symbol/ }));
+      expect(shownSymbols()).toEqual(["ETH", "BTC", "ADA"]);
+    });
+
+    it("sorts Target % numerically", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.click(screen.getByRole("button", { name: "Target %" }));
+      expect(shownSymbols()).toEqual(["ADA", "ETH", "BTC"]);
+    });
+
+    it("an edit on a sorted, filtered table changes the right row", async () => {
+      // Rows used to be edited by their index on screen; once sorted or
+      // filtered, that index points at another asset.
+      const user = userEvent.setup();
+      const hook = setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.click(screen.getByRole("button", { name: "Symbol" }));
+      await user.type(screen.getByLabelText("Filter Notes"), "binance");
+
+      const adaRow = screen.getByDisplayValue("ADA").closest("tr");
+      const target = within(adaRow).getAllByRole("spinbutton")[0];
+      await user.clear(target);
+      await user.type(target, "40");
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      const ethRow = screen.getByDisplayValue("ETH").closest("tr");
+      const ethTarget = within(ethRow).getAllByRole("spinbutton")[0];
+      await user.clear(ethTarget);
+      await user.type(ethTarget, "0");
+      await user.click(screen.getByRole("button", { name: "Save All" }));
+
+      const saved = Object.fromEntries(hook.save.mock.calls[0][0].map((r) => [r.symbol, r.target_percent]));
+      expect(saved).toEqual({ BTC: 60, ETH: 0, ADA: 40 });
+    });
+
+    it("Sum and Save All cover rows hidden by a filter", async () => {
+      const user = userEvent.setup();
+      const hook = setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.type(screen.getByLabelText("Filter Symbol"), "BTC");
+
+      expect(screen.getByText("Sum: 100.00%")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Save All" }));
+      expect(hook.save.mock.calls[0][0].map((r) => r.symbol)).toEqual(["BTC", "ETH", "ADA"]);
+    });
+
+    it("removing a row while filtered removes that row, not another one", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.type(screen.getByLabelText("Filter Symbol"), "ADA");
+
+      const [adaRow] = screen.getAllByRole("row").slice(2); // the only row left under the filter
+      await user.click(within(adaRow).getByRole("button", { name: "Remove" }));
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+
+      expect(shownSymbols()).toEqual(["BTC", "ETH"]);
+    });
+
+    it("a new row stays visible at the bottom while filtered and sorted", async () => {
+      const user = userEvent.setup();
+      setupHook({ rows: threeRows });
+      render(<PortfolioTargetsTab />);
+      await user.click(screen.getByRole("button", { name: "Symbol" }));
+      await user.type(screen.getByLabelText("Filter Symbol"), "BTC");
+
+      await user.click(screen.getByRole("button", { name: "+ Add Asset" }));
+      await user.type(within(lastRow()).getAllByRole("textbox")[0], "ZZZ");
+
+      expect(shownSymbols()).toEqual(["BTC", "ZZZ"]);
+    });
+  });
+
   it("surfaces a fetch error from the hook", () => {
     setupHook({ error: "network down" });
     render(<PortfolioTargetsTab />);
