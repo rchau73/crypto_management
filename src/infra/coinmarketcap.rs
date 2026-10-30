@@ -1,6 +1,11 @@
 //! Adapter for CoinMarketCap's "listings/latest" endpoint. Only the fields
 //! we use are declared, so an unrelated field changing shape (or being
 //! null for some coin) can't break the whole price refresh.
+//!
+//! Tickers are not unique on CoinMarketCap: in October 2026 a memecoin
+//! also called "BTC" entered the top 1000 and Bitcoin got priced at $0.03.
+//! The listing is sorted by market cap, so for a repeated ticker we keep
+//! the first (largest) coin and drop the rest.
 
 use crate::domain::market_data::{CryptoProvider, MarketDataResult};
 use crate::domain::models::MarketQuote;
@@ -8,6 +13,7 @@ use crate::infra::http::{build_client, read_json};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 const LISTINGS_URL: &str = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest";
 const LISTING_LIMIT: &str = "1000";
@@ -20,6 +26,8 @@ struct ListingsResponse {
 #[derive(Deserialize)]
 struct Listing {
     symbol: String,
+    #[serde(default)]
+    name: Option<String>,
     quote: Quote,
 }
 
@@ -35,17 +43,28 @@ struct UsdQuote {
 }
 
 fn to_market_quotes(response: ListingsResponse) -> Vec<MarketQuote> {
-    response
-        .data
-        .into_iter()
+    let mut seen = HashSet::new();
+    let mut quotes = Vec::new();
+    for listing in response.data {
         // A listed coin with no price can't be valued — leave it out.
-        .filter_map(|listing| {
-            listing.quote.usd.price.map(|price| MarketQuote {
-                symbol: listing.symbol,
+        let Some(price) = listing.quote.usd.price else {
+            continue;
+        };
+        if !seen.insert(listing.symbol.clone()) {
+            tracing::warn!(
+                symbol = %listing.symbol,
+                name = listing.name.as_deref().unwrap_or(""),
                 price,
-            })
-        })
-        .collect()
+                "CoinMarketCap lists this ticker twice — keeping the larger coin"
+            );
+            continue;
+        }
+        quotes.push(MarketQuote {
+            symbol: listing.symbol,
+            price,
+        });
+    }
+    quotes
 }
 
 pub struct CoinMarketCapProvider {
@@ -104,6 +123,47 @@ mod tests {
                     price: 3000.0
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_repeated_ticker_keeps_the_first_larger_coin() {
+        // Regression: "Big Titty Coin" (rank 569, $0.03) also uses BTC and
+        // overwrote Bitcoin's price.
+        let raw = r#"{"data": [
+            {"symbol": "BTC", "name": "Bitcoin", "quote": {"USD": {"price": 79000.0}}},
+            {"symbol": "ETH", "quote": {"USD": {"price": 3000.0}}},
+            {"symbol": "BTC", "name": "Big Titty Coin", "quote": {"USD": {"price": 0.03}}}
+        ]}"#;
+        let quotes = to_market_quotes(serde_json::from_str(raw).unwrap());
+        assert_eq!(
+            quotes,
+            vec![
+                MarketQuote {
+                    symbol: "BTC".into(),
+                    price: 79000.0
+                },
+                MarketQuote {
+                    symbol: "ETH".into(),
+                    price: 3000.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_priceless_first_listing_does_not_hide_a_priced_one() {
+        let raw = r#"{"data": [
+            {"symbol": "X", "quote": {"USD": {"price": null}}},
+            {"symbol": "X", "quote": {"USD": {"price": 2.0}}}
+        ]}"#;
+        let quotes = to_market_quotes(serde_json::from_str(raw).unwrap());
+        assert_eq!(
+            quotes,
+            vec![MarketQuote {
+                symbol: "X".into(),
+                price: 2.0
+            }]
         );
     }
 
