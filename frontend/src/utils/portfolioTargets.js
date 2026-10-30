@@ -72,6 +72,29 @@ export function toSavePayload(rows) {
   });
 }
 
+// Keeps the rows whose every filtered column contains the typed text
+// (case-insensitive). Notes is the joined source list ("Binance | Ledger"),
+// so filtering it by "binance" finds every position held there. A new,
+// unsaved row always stays visible: it would vanish while being typed in.
+export function filterRows(rows, filters) {
+  const active = Object.entries(filters)
+    .map(([key, text]) => [key, text.trim().toLowerCase()])
+    .filter(([, text]) => text !== "");
+  if (active.length === 0) return rows;
+  return rows.filter(
+    (row) => row.isNew || active.every(([key, text]) => String(row[key] ?? "").toLowerCase().includes(text))
+  );
+}
+
+const NUMERIC_COLUMNS = new Set(["target_percent", "current_quantity"]);
+
+// Sort value for a column: numbers as numbers (an edited Target % is a
+// string), text with null/undefined as "" so they don't sort as "null".
+export function sortValue(row, key) {
+  if (NUMERIC_COLUMNS.has(key)) return Number(row[key]) || 0;
+  return String(row[key] ?? "");
+}
+
 export function uniqueSorted(values) {
   return Array.from(new Set(values.filter(Boolean))).sort();
 }

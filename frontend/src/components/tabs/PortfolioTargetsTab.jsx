@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Autocomplete,
   Box,
@@ -11,17 +11,40 @@ import {
   TableBody,
   TableCell,
   TableContainer,
-  TableHead,
   TableRow,
   TextField,
   Typography,
 } from "@mui/material";
 import { usePortfolioTargets } from "../../hooks/usePortfolioTargets";
+import { useSortableData } from "../../hooks/useSortableData";
+import { SortableTableHead } from "../SortableTableHead";
 import { fetchBarcaTargets } from "../../api/client";
 import { zebraRowSx } from "../../styles/tableStyles";
 import { STATUS_COLORS } from "../../theme";
 import { QuantityCell } from "../QuantityCell";
-import { ASSET_CLASSES, blankRow, toSavePayload, uniqueSorted, validateRows } from "../../utils/portfolioTargets";
+import {
+  ASSET_CLASSES,
+  blankRow,
+  filterRows,
+  sortValue,
+  toSavePayload,
+  uniqueSorted,
+  validateRows,
+} from "../../utils/portfolioTargets";
+import { getTotalTargetPercent } from "../../utils/allocationMath";
+
+const COLUMNS = [
+  { key: "symbol", label: "Symbol", filterable: true },
+  { key: "group_name", label: "Group", filterable: true },
+  { key: "barca", label: "BARCA", filterable: true },
+  { key: "asset_class", label: "Asset Class", filterable: true },
+  { key: "target_percent", label: "Target %", align: "right", filterable: true },
+  { key: "current_quantity", label: "Quantity", align: "right", filterable: true },
+  { key: "notes", label: "Notes", filterable: true },
+  { key: "actions", label: "Actions", align: "right", sortable: false },
+];
+
+const NO_FILTERS = Object.fromEntries(COLUMNS.filter((c) => c.filterable).map((c) => [c.key, ""]));
 
 // BARCA names from both market profiles, used only as typing suggestions.
 function useBarcaNameSuggestions() {
@@ -41,32 +64,47 @@ function useBarcaNameSuggestions() {
 // asset class identify its holdings in the ledger — renaming would move the
 // target away from the holdings — so to "rename", remove the row and add a
 // new one. Quantity rules live in QuantityCell.
+//
+// Every column can be sorted (click its header) and filtered (the box under
+// it). Rows are edited by a stable `_id`, never by their position on screen,
+// since sorting/filtering changes that. The Sum and "Save All" always cover
+// every row, filtered out or not. New rows stay at the bottom, unsorted, so
+// they don't jump around while being typed in.
 export function PortfolioTargetsTab() {
   const { rows: savedRows, loading, error, save } = usePortfolioTargets();
   const [rows, setRows] = useState([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [filters, setFilters] = useState(NO_FILTERS);
   const barcaNames = useBarcaNameSuggestions();
+  const nextId = useRef(0);
+  const withId = (row) => ({ ...row, _id: nextId.current++ });
 
   useEffect(() => {
-    setRows(savedRows.map((r) => ({ ...r, isNew: false })));
+    setRows(savedRows.map((r) => withId({ ...r, isNew: false })));
     setSaveSuccess(false);
   }, [savedRows]);
+
+  const savedVisible = useMemo(() => filterRows(rows.filter((r) => !r.isNew), filters), [rows, filters]);
+  const { sortConfig, toggleSort, sortedRows } = useSortableData(savedVisible, { getValue: sortValue });
+  const visibleRows = [...sortedRows, ...rows.filter((r) => r.isNew)];
+  const isFiltered = Object.values(filters).some((text) => text.trim() !== "");
 
   const groupOptions = useMemo(() => uniqueSorted(rows.map((r) => r.group_name)), [rows]);
   const barcaOptions = useMemo(() => uniqueSorted([...barcaNames, ...rows.map((r) => r.barca)]), [barcaNames, rows]);
   const { sum, isValid } = validateRows(rows);
 
-  const updateRow = (index, field, value) => {
-    setRows((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
+  const updateRow = (id, field, value) => {
+    setRows((prev) => prev.map((r) => (r._id === id ? { ...r, [field]: value } : r)));
     setSaveSuccess(false);
   };
-  const addRow = () => setRows((prev) => [...prev, blankRow()]);
-  const removeRow = (index) => {
-    setRows((prev) => prev.filter((_, i) => i !== index));
+  const addRow = () => setRows((prev) => [...prev, withId(blankRow())]);
+  const removeRow = (id) => {
+    setRows((prev) => prev.filter((r) => r._id !== id));
     setSaveSuccess(false);
   };
+  const setFilter = (key, text) => setFilters((prev) => ({ ...prev, [key]: text }));
 
   const handleSave = async () => {
     setSaving(true);
@@ -102,26 +140,26 @@ export function PortfolioTargetsTab() {
 
       <TableContainer component={Paper} sx={{ maxWidth: "100%", overflowX: "auto", mb: 2 }}>
         <Table sx={{ minWidth: 960 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell>Symbol</TableCell>
-              <TableCell>Group</TableCell>
-              <TableCell>BARCA</TableCell>
-              <TableCell>Asset Class</TableCell>
-              <TableCell align="right">Target %</TableCell>
-              <TableCell align="right">Quantity</TableCell>
-              <TableCell>Notes</TableCell>
-              <TableCell align="right">Actions</TableCell>
-            </TableRow>
-          </TableHead>
+          <SortableTableHead
+            columns={COLUMNS}
+            sortConfig={sortConfig}
+            onSort={toggleSort}
+            filters={filters}
+            onFilterChange={setFilter}
+            filterRowEnd={
+              <Button size="small" disabled={!isFiltered} onClick={() => setFilters(NO_FILTERS)}>
+                Clear
+              </Button>
+            }
+          />
           <TableBody>
-            {rows.map((r, i) => (
-              <TableRow key={i} hover sx={zebraRowSx}>
+            {visibleRows.map((r) => (
+              <TableRow key={r._id} hover sx={zebraRowSx}>
                 <TableCell>
                   <TextField
                     size="small"
                     value={r.symbol}
-                    onChange={(e) => updateRow(i, "symbol", e.target.value)}
+                    onChange={(e) => updateRow(r._id, "symbol", e.target.value)}
                     disabled={!r.isNew}
                     error={r.symbol.trim() === ""}
                     sx={{ width: 110 }}
@@ -133,7 +171,7 @@ export function PortfolioTargetsTab() {
                     size="small"
                     options={groupOptions}
                     value={r.group_name || ""}
-                    onInputChange={(_, value) => updateRow(i, "group_name", value)}
+                    onInputChange={(_, value) => updateRow(r._id, "group_name", value)}
                     disabled={!r.isNew}
                     renderInput={(params) => <TextField {...params} sx={{ width: 120 }} />}
                   />
@@ -144,14 +182,14 @@ export function PortfolioTargetsTab() {
                     size="small"
                     options={barcaOptions}
                     value={r.barca || ""}
-                    onInputChange={(_, value) => updateRow(i, "barca", value)}
+                    onInputChange={(_, value) => updateRow(r._id, "barca", value)}
                     disabled={!r.isNew}
                     renderInput={(params) => <TextField {...params} sx={{ width: 140 }} />}
                   />
                 </TableCell>
                 <TableCell>
                   <FormControl size="small" sx={{ minWidth: 130 }} disabled={!r.isNew}>
-                    <Select value={r.asset_class} onChange={(e) => updateRow(i, "asset_class", e.target.value)}>
+                    <Select value={r.asset_class} onChange={(e) => updateRow(r._id, "asset_class", e.target.value)}>
                       {ASSET_CLASSES.map((c) => (
                         <MenuItem key={c} value={c}>
                           {c}
@@ -165,7 +203,7 @@ export function PortfolioTargetsTab() {
                     size="small"
                     type="number"
                     value={r.target_percent}
-                    onChange={(e) => updateRow(i, "target_percent", e.target.value)}
+                    onChange={(e) => updateRow(r._id, "target_percent", e.target.value)}
                     sx={{ width: 90 }}
                     slotProps={{ htmlInput: { step: 0.1, min: 0, max: 100 } }}
                   />
@@ -173,23 +211,23 @@ export function PortfolioTargetsTab() {
                 <TableCell align="right">
                   <QuantityCell
                     row={r}
-                    onChange={(value) => updateRow(i, "current_quantity", value)}
+                    onChange={(value) => updateRow(r._id, "current_quantity", value)}
                     // Update only this row: re-fetching everything would wipe
                     // unsaved Target % edits on other rows.
-                    onCorrected={(quantity) => updateRow(i, "current_quantity", quantity)}
+                    onCorrected={(quantity) => updateRow(r._id, "current_quantity", quantity)}
                   />
                 </TableCell>
                 <TableCell>
                   <TextField
                     size="small"
                     value={r.notes || ""}
-                    onChange={(e) => updateRow(i, "notes", e.target.value)}
+                    onChange={(e) => updateRow(r._id, "notes", e.target.value)}
                     disabled={!r.isNew}
                     sx={{ width: 140 }}
                   />
                 </TableCell>
                 <TableCell align="right">
-                  <Button size="small" color="error" onClick={() => removeRow(i)}>
+                  <Button size="small" color="error" onClick={() => removeRow(r._id)}>
                     Remove
                   </Button>
                 </TableCell>
@@ -197,8 +235,15 @@ export function PortfolioTargetsTab() {
             ))}
             {!loading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} align="center" sx={{ color: "text.secondary" }}>
+                <TableCell colSpan={COLUMNS.length} align="center" sx={{ color: "text.secondary" }}>
                   No portfolio targets yet.
+                </TableCell>
+              </TableRow>
+            )}
+            {rows.length > 0 && visibleRows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={COLUMNS.length} align="center" sx={{ color: "text.secondary" }}>
+                  No rows match the filters.
                 </TableCell>
               </TableRow>
             )}
@@ -213,6 +258,12 @@ export function PortfolioTargetsTab() {
         <Typography variant="body2" sx={{ color: isValid ? STATUS_COLORS.good : STATUS_COLORS.critical, fontWeight: 600 }}>
           Sum: {sum.toFixed(2)}%
         </Typography>
+        {isFiltered && (
+          <Typography variant="body2" sx={{ color: "text.secondary" }}>
+            Showing {sortedRows.length} of {rows.filter((r) => !r.isNew).length} rows · filtered sum{" "}
+            {getTotalTargetPercent(sortedRows).toFixed(2)}% (Sum and Save All cover every row)
+          </Typography>
+        )}
         <Button variant="contained" disabled={!isValid || saving} onClick={handleSave}>
           Save All
         </Button>

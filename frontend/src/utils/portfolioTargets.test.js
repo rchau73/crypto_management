@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { blankRow, canCorrectQuantity, parseNonNegative, toSavePayload, uniqueSorted, validateRows } from "./portfolioTargets";
+import {
+  blankRow,
+  canCorrectQuantity,
+  filterRows,
+  parseNonNegative,
+  sortValue,
+  toSavePayload,
+  uniqueSorted,
+  validateRows,
+} from "./portfolioTargets";
 
 const existing = (symbol, target, extra = {}) => ({
   symbol,
@@ -84,5 +93,52 @@ describe("toSavePayload", () => {
 describe("uniqueSorted", () => {
   it("dedupes, sorts and drops empty values", () => {
     expect(uniqueSorted(["b", "", "a", "b", null])).toEqual(["a", "b"]);
+  });
+});
+
+describe("filterRows", () => {
+  const rows = [
+    { symbol: "BTC", group_name: "Holding", notes: "Binance | Ledger Wallet", current_quantity: 0.6 },
+    { symbol: "ETH", group_name: "DeFi", notes: "Binance USDC", current_quantity: 2 },
+    { symbol: "SOL", group_name: null, notes: null, current_quantity: 0 },
+  ];
+  const symbols = (result) => result.map((r) => r.symbol);
+
+  it("returns every row when no filter is typed (blank text counts as none)", () => {
+    expect(filterRows(rows, { symbol: "", notes: "   " })).toBe(rows);
+  });
+
+  it("matches text inside the column, ignoring case and surrounding spaces", () => {
+    expect(symbols(filterRows(rows, { notes: " binance " }))).toEqual(["BTC", "ETH"]);
+    expect(symbols(filterRows(rows, { notes: "ledger" }))).toEqual(["BTC"]);
+  });
+
+  it("requires every typed filter to match", () => {
+    expect(symbols(filterRows(rows, { notes: "binance", group_name: "defi" }))).toEqual(["ETH"]);
+  });
+
+  it("treats null values as empty, not as the text 'null'", () => {
+    expect(filterRows(rows, { group_name: "null" })).toEqual([]);
+  });
+
+  it("matches numbers by their text", () => {
+    expect(symbols(filterRows(rows, { current_quantity: "0.6" }))).toEqual(["BTC"]);
+  });
+
+  it("always keeps a new, unsaved row", () => {
+    const fresh = { ...blankRow(), symbol: "" };
+    expect(filterRows([...rows, fresh], { symbol: "BTC" })).toEqual([rows[0], fresh]);
+  });
+});
+
+describe("sortValue", () => {
+  it("sorts Target % and Quantity as numbers, even when typed as text", () => {
+    expect(sortValue({ target_percent: "12.5" }, "target_percent")).toBe(12.5);
+    expect(sortValue({ current_quantity: "" }, "current_quantity")).toBe(0);
+  });
+
+  it("turns a missing text value into an empty string", () => {
+    expect(sortValue({ notes: null }, "notes")).toBe("");
+    expect(sortValue({ symbol: "BTC" }, "symbol")).toBe("BTC");
   });
 });
