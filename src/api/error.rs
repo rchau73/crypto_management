@@ -2,6 +2,7 @@
 //! `?`, and it renders as `{"error": "..."}` with the right status code.
 
 use crate::usecases::allocations_service::AllocationsError;
+use crate::usecases::portfolio_service::PortfolioError;
 use crate::usecases::targets_service::TargetsError;
 use crate::usecases::user_service::UserServiceError;
 use crate::usecases::wallet_import::ImportError;
@@ -120,5 +121,18 @@ impl From<AllocationsError> for ApiError {
             }
             AllocationsError::Repo(_) => ApiError::internal(e),
         }
+    }
+}
+
+impl From<PortfolioError> for ApiError {
+    fn from(e: PortfolioError) -> Self {
+        let status = match &e {
+            PortfolioError::NotFound => StatusCode::NOT_FOUND,
+            PortfolioError::ReadOnly => StatusCode::FORBIDDEN,
+            PortfolioError::Invalid(_) => StatusCode::BAD_REQUEST,
+            PortfolioError::NameTaken => StatusCode::CONFLICT,
+            PortfolioError::Repo(_) => return ApiError::internal(e),
+        };
+        ApiError::new(status, e.to_string())
     }
 }

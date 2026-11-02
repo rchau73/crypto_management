@@ -58,22 +58,54 @@ function putJson(path, body) {
   });
 }
 
-export async function fetchAllocations() {
-  const res = await apiFetch("/api/allocations");
+// --- Portfolios (separate wallets) ---------------------------------------
+//
+// Every wallet/target/history call below takes the portfolio it belongs to
+// as its first argument. There is deliberately no "current portfolio" kept
+// in this module: a call that forgot it would quietly use the wrong wallet.
+
+function portfolioPath(portfolioId, rest) {
+  return `/api/portfolios/${encodeURIComponent(portfolioId)}${rest}`;
+}
+
+// The portfolios the logged-in user can open: [{ id, name, access }].
+export async function fetchPortfolios() {
+  const res = await apiFetch("/api/portfolios");
+  return parseJsonOrThrow(res, "Failed to fetch portfolios");
+}
+
+// Manager+ only. `copyBarcaFrom` starts the new portfolio with a copy of
+// that portfolio's BARCA targets.
+export async function createPortfolio(name, copyBarcaFrom = null) {
+  const res = await postJson("/api/portfolios", { name, copy_barca_from: copyBarcaFrom });
+  return parseJsonOrThrow(res, "Failed to create portfolio");
+}
+
+export async function renamePortfolio(portfolioId, name) {
+  const res = await apiFetch(portfolioPath(portfolioId, ""), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return parseJsonOrThrow(res, "Failed to rename portfolio");
+}
+
+export async function fetchAllocations(portfolioId) {
+  const res = await apiFetch(portfolioPath(portfolioId, "/allocations"));
   return parseJsonOrThrow(res, "Network response was not ok");
 }
 
-export async function fetchHistory(level) {
-  const res = await apiFetch(`/api/history?level=${encodeURIComponent(level)}`);
+export async function fetchHistory(portfolioId, level) {
+  const res = await apiFetch(portfolioPath(portfolioId, `/history?level=${encodeURIComponent(level)}`));
   return parseJsonOrThrow(res, "Failed to fetch history");
 }
 
 // Uploads a wallet CSV. Only new positions are added; existing ones are
 // never overwritten. Manager+ only, enforced server-side.
-export async function uploadWalletCsv(file) {
+export async function uploadWalletCsv(portfolioId, file) {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await apiFetch("/api/import_wallets/upload", {
+  const res = await apiFetch(portfolioPath(portfolioId, "/import_wallets/upload"), {
     method: "POST",
     body: formData,
   });
@@ -83,8 +115,8 @@ export async function uploadWalletCsv(file) {
 // Downloads the wallet in the import format (one line per source, plus
 // price_usd/value_usd). Manager+ only, enforced server-side. Returns the
 // file as a Blob with the server-suggested filename.
-export async function downloadWalletCsv() {
-  const res = await apiFetch("/api/export_wallets");
+export async function downloadWalletCsv(portfolioId) {
+  const res = await apiFetch(portfolioPath(portfolioId, "/export_wallets"));
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error || "Export failed");
@@ -135,23 +167,23 @@ export async function deleteUser(id) {
   return parseJsonOrThrow(res, "Failed to delete user");
 }
 
-export async function fetchPortfolioTargets() {
-  const res = await apiFetch("/api/portfolio/targets");
+export async function fetchPortfolioTargets(portfolioId) {
+  const res = await apiFetch(portfolioPath(portfolioId, "/targets"));
   return parseJsonOrThrow(res, "Failed to fetch portfolio targets");
 }
 
 // Replaces the whole portfolio-targets table in one atomic save — `rows`
 // must be the complete desired state (every row, not a diff), and every
 // row's target_percent across the whole set must sum to 100%.
-export async function savePortfolioTargets(rows) {
-  const res = await putJson("/api/portfolio/targets", { rows });
+export async function savePortfolioTargets(portfolioId, rows) {
+  const res = await putJson(portfolioPath(portfolioId, "/targets"), { rows });
   return parseJsonOrThrow(res, "Failed to save portfolio targets");
 }
 
 // Fixes the quantity of a position with exactly one source, immediately
 // (not part of "Save All"). The server refuses multi-source positions.
-export async function correctWalletQuantity({ symbol, group_name, barca, asset_class, current_quantity }) {
-  const res = await putJson("/api/portfolio/targets/quantity", {
+export async function correctWalletQuantity(portfolioId, { symbol, group_name, barca, asset_class, current_quantity }) {
+  const res = await putJson(portfolioPath(portfolioId, "/targets/quantity"), {
     symbol,
     group_name,
     barca,
@@ -161,15 +193,15 @@ export async function correctWalletQuantity({ symbol, group_name, barca, asset_c
   return parseJsonOrThrow(res, "Failed to correct quantity");
 }
 
-export async function fetchBarcaTargets(market) {
-  const res = await apiFetch(`/api/barca/targets?market=${encodeURIComponent(market)}`);
+export async function fetchBarcaTargets(portfolioId, market) {
+  const res = await apiFetch(portfolioPath(portfolioId, `/barca/targets?market=${encodeURIComponent(market)}`));
   return parseJsonOrThrow(res, "Failed to fetch BARCA targets");
 }
 
 // Replaces every BARCA target for one market profile in one atomic save —
 // `targets` must be the complete desired state for that market, and must
 // sum to 100%. A barca left out of `targets` is deleted from that market.
-export async function saveBarcaTargets(market, targets) {
-  const res = await putJson("/api/barca/targets", { market, targets });
+export async function saveBarcaTargets(portfolioId, market, targets) {
+  const res = await putJson(portfolioPath(portfolioId, "/barca/targets"), { market, targets });
   return parseJsonOrThrow(res, "Failed to save BARCA targets");
 }

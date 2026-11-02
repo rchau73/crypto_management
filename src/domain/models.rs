@@ -1,6 +1,6 @@
 //! Plain data shared by every layer. No I/O and no business rules live
 //! here — just the shapes of things, plus tiny parse/format helpers for the
-//! two enums.
+//! enums.
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -284,6 +284,63 @@ pub struct BarcaHistoryRow {
 pub struct TotalHistoryRow {
     pub timestamp: String,
     pub total_value: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Portfolios (separate wallets in one database)
+// ---------------------------------------------------------------------------
+
+/// Which portfolio a read or write belongs to. Its own type rather than a
+/// bare `i64`, so a portfolio id can't be passed where a user id is
+/// expected (or the other way round) without the compiler noticing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(transparent)]
+#[serde(transparent)]
+pub struct PortfolioId(pub i64);
+
+impl PortfolioId {
+    /// The portfolio migration 0013 created for the data that existed
+    /// before there were several. First-run seeding also goes here.
+    pub const FIRST: PortfolioId = PortfolioId(1);
+}
+
+impl std::fmt::Display for PortfolioId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// What a member may do in one portfolio. Ordered `View < Manage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortfolioAccess {
+    View,
+    Manage,
+}
+
+impl PortfolioAccess {
+    pub fn parse(s: &str) -> Option<PortfolioAccess> {
+        match s {
+            "manage" => Some(PortfolioAccess::Manage),
+            "view" => Some(PortfolioAccess::View),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PortfolioAccess::Manage => "manage",
+            PortfolioAccess::View => "view",
+        }
+    }
+}
+
+/// A portfolio as one of its members sees it: the account switcher's rows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PortfolioSummary {
+    pub id: PortfolioId,
+    pub name: String,
+    pub access: PortfolioAccess,
 }
 
 // ---------------------------------------------------------------------------

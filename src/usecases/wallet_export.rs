@@ -8,7 +8,7 @@
 //! and `value_usd`, come from the latest "Update Prices" snapshot; the
 //! importer ignores them.
 
-use crate::domain::models::{PositionKey, PositionSource};
+use crate::domain::models::{PortfolioId, PositionKey, PositionSource};
 use crate::domain::repository::{PortfolioRepo, RepoResult, SnapshotRepo};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -38,20 +38,21 @@ impl WalletExportService {
         }
     }
 
-    /// The whole wallet as CSV text.
-    pub async fn export_csv(&self) -> RepoResult<String> {
-        let sources = self.portfolio.fetch_position_sources().await?;
+    /// One portfolio's whole wallet as CSV text.
+    pub async fn export_csv(&self, portfolio: PortfolioId) -> RepoResult<String> {
+        let sources = self.portfolio.fetch_position_sources(portfolio).await?;
         let targets: HashMap<PositionKey, f64> = self
             .portfolio
-            .fetch_positions()
+            .fetch_positions(portfolio)
             .await?
             .into_iter()
             .map(|p| (p.key(), p.target_percent))
             .collect();
-        let prices = self.snapshots.fetch_latest_prices().await?;
+        let prices = self.snapshots.fetch_latest_prices(portfolio).await?;
 
         let csv = write_wallet_csv(&sources, &targets, &prices)?;
         tracing::info!(
+            portfolio_id = %portfolio,
             rows = sources.len(),
             priced_symbols = prices.len(),
             bytes = csv.len(),
@@ -116,6 +117,10 @@ mod tests {
     use crate::domain::models::{AllocationReport, AllocationSnapshot, AssetAllocation};
     use crate::infra::sqlite::test_repo;
     use crate::usecases::wallet_import::WalletImportService;
+
+    /// These tests are about one wallet; isolation between portfolios is
+    /// tested in `infra::sqlite::repo` and `tests::integration`.
+    const PORTFOLIO: PortfolioId = PortfolioId::FIRST;
 
     fn source(symbol: &str, quantity: f64, notes: Option<&str>) -> PositionSource {
         PositionSource {
@@ -193,33 +198,36 @@ mod tests {
                    BTC,Holding,Base,58,0.5494,Ledger Wallet,crypto\n\
                    XPML11,FII,RendaPassiva,12,10,,br-equities\n";
         WalletImportService::new(original.clone())
-            .import_csv(csv.as_bytes())
+            .import_csv(PORTFOLIO, csv.as_bytes())
             .await
             .unwrap();
         original
-            .record_snapshot(&AllocationSnapshot {
-                timestamp: "2026-10-02T00:00:00+00:00".into(),
-                report: AllocationReport {
-                    per_asset: vec![AssetAllocation {
-                        symbol: "BTC".into(),
-                        group: "Holding".into(),
-                        barca: "Base".into(),
-                        price: 100_000.0,
-                        current_quantity: 0.0,
-                        value: 0.0,
-                        target_percent: 0.0,
-                        current_percent: 0.0,
-                        deviation: 0.0,
-                    }],
-                    ..Default::default()
+            .record_snapshot(
+                PORTFOLIO,
+                &AllocationSnapshot {
+                    timestamp: "2026-10-02T00:00:00+00:00".into(),
+                    report: AllocationReport {
+                        per_asset: vec![AssetAllocation {
+                            symbol: "BTC".into(),
+                            group: "Holding".into(),
+                            barca: "Base".into(),
+                            price: 100_000.0,
+                            current_quantity: 0.0,
+                            value: 0.0,
+                            target_percent: 0.0,
+                            current_percent: 0.0,
+                            deviation: 0.0,
+                        }],
+                        ..Default::default()
+                    },
+                    asset_notes: HashMap::new(),
                 },
-                asset_notes: HashMap::new(),
-            })
+            )
             .await
             .unwrap();
 
         let exported = WalletExportService::new(original.clone(), original.clone())
-            .export_csv()
+            .export_csv(PORTFOLIO)
             .await
             .unwrap();
         assert!(
@@ -228,12 +236,12 @@ mod tests {
 
         let copy = test_repo().await;
         WalletImportService::new(copy.clone())
-            .import_csv(exported.as_bytes())
+            .import_csv(PORTFOLIO, exported.as_bytes())
             .await
             .unwrap();
         assert_eq!(
-            copy.fetch_positions().await.unwrap(),
-            original.fetch_positions().await.unwrap()
+            copy.fetch_positions(PORTFOLIO).await.unwrap(),
+            original.fetch_positions(PORTFOLIO).await.unwrap()
         );
     }
 }

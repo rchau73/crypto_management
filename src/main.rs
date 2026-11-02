@@ -5,6 +5,7 @@ use anyhow::Context;
 use axum::http::{HeaderValue, Method, header};
 use crypto_management::api::{AppState, build_router};
 use crypto_management::config::AppConfig;
+use crypto_management::domain::models::{PortfolioAccess, PortfolioId};
 use crypto_management::infra::bcb_ptax::BcbPtaxProvider;
 use crypto_management::infra::brapi::BrapiProvider;
 use crypto_management::infra::coinmarketcap::CoinMarketCapProvider;
@@ -56,12 +57,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// On an empty database: seed the portfolio from the wallet CSV and create
-/// the admin account (there is no public sign-up).
+/// On an empty database: seed the first portfolio from the wallet CSV and
+/// create the admin account (there is no public sign-up), as a `manage`
+/// member of that portfolio so the app is usable right away.
 async fn seed_first_run_data(state: &AppState, config: &AppConfig) {
     state
         .wallet_import
-        .seed_if_empty(&config.wallet_seed_path)
+        .seed_if_empty(PortfolioId::FIRST, &config.wallet_seed_path)
         .await;
 
     let Some(admin) = &config.admin_seed else {
@@ -72,8 +74,17 @@ async fn seed_first_run_data(state: &AppState, config: &AppConfig) {
         .ensure_admin_exists(&admin.username, &admin.password, &admin.email)
         .await
     {
-        Ok(true) => info!(username = %admin.username, "Created the initial admin account"),
-        Ok(false) => {}
+        Ok(Some(admin_id)) => {
+            info!(username = %admin.username, "Created the initial admin account");
+            if let Err(e) = state
+                .portfolios
+                .add_member(PortfolioId::FIRST, admin_id, PortfolioAccess::Manage)
+                .await
+            {
+                warn!(error = %e, "Failed to give the initial admin the first portfolio");
+            }
+        }
+        Ok(None) => {}
         Err(e) => warn!(error = %e, "Failed to create the initial admin account"),
     }
 }

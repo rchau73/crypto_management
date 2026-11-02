@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Box, Button, TextField, Typography } from "@mui/material";
 import { correctWalletQuantity } from "../api/client";
+import { useCurrentPortfolio } from "../hooks/useCurrentPortfolio";
 import { canCorrectQuantity, parseNonNegative } from "../utils/portfolioTargets";
 
 // The Quantity cell of one Portfolio Targets row:
@@ -9,6 +10,7 @@ import { canCorrectQuantity, parseNonNegative } from "../utils/portfolioTargets"
 //   away through its own endpoint (not part of "Save All");
 // - existing multi-source row: read-only, marked "multi-fonte".
 export function QuantityCell({ row, onChange, onCorrected }) {
+  const { id: portfolioId } = useCurrentPortfolio();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -40,7 +42,7 @@ export function QuantityCell({ row, onChange, onCorrected }) {
     setSaving(true);
     setError("");
     try {
-      await correctWalletQuantity({
+      await correctWalletQuantity(portfolioId, {
         symbol: row.symbol,
         group_name: row.group_name || null,
         barca: row.barca || null,

@@ -3,7 +3,8 @@
 
 use crate::domain::market_data::{CryptoProvider, EquityProvider, FxProvider};
 use crate::domain::models::{
-    AllocationReport, AllocationSnapshot, AssetClass, FxRate, MarketQuote, WalletPosition,
+    AllocationReport, AllocationSnapshot, AssetClass, FxRate, MarketQuote, PortfolioId,
+    WalletPosition,
 };
 use crate::domain::repository::{BarcaTargetRepo, PortfolioRepo, RepoError, SnapshotRepo};
 use crate::usecases::compute_allocations::compute_allocations;
@@ -85,8 +86,11 @@ impl AllocationsService {
     /// optional extras the user may not have API keys for. The same goes
     /// for the PTAX rate: without it, Brazilian assets are left out rather
     /// than valued in reais as if they were dollars.
-    pub async fn refresh_prices(&self) -> Result<AllocationReport, AllocationsError> {
-        let positions = self.portfolio.fetch_positions().await?;
+    pub async fn refresh_prices(
+        &self,
+        portfolio: PortfolioId,
+    ) -> Result<AllocationReport, AllocationsError> {
+        let positions = self.portfolio.fetch_positions(portfolio).await?;
         let PricedQuotes {
             quotes,
             asset_notes,
@@ -94,7 +98,7 @@ impl AllocationsService {
 
         let barca_targets: HashMap<String, f64> = self
             .barca_targets
-            .fetch_barca_targets(&self.current_market)
+            .fetch_barca_targets(portfolio, &self.current_market)
             .await?
             .into_iter()
             .map(|t| (t.barca, t.target_percent))
@@ -103,14 +107,18 @@ impl AllocationsService {
         let report = compute_allocations(&positions, &quotes, &barca_targets);
 
         self.snapshots
-            .record_snapshot(&AllocationSnapshot {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                report: report.clone(),
-                asset_notes,
-            })
+            .record_snapshot(
+                portfolio,
+                &AllocationSnapshot {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    report: report.clone(),
+                    asset_notes,
+                },
+            )
             .await?;
 
         tracing::info!(
+            portfolio_id = %portfolio,
             assets = report.per_asset.len(),
             groups = report.per_group.len(),
             total_value = report.total_value,
@@ -241,6 +249,10 @@ mod tests {
     use crate::domain::models::{LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionKey};
     use crate::infra::sqlite::{SqliteRepo, test_repo};
 
+    /// These tests are about one wallet; isolation between portfolios is
+    /// tested in `infra::sqlite::repo` and `tests::integration`.
+    const PORTFOLIO: PortfolioId = PortfolioId::FIRST;
+
     async fn seed(repo: &SqliteRepo, symbol: &str, asset_class: &str, qty: f64, target: f64) {
         let entry = LedgerEntry {
             symbol: symbol.to_string(),
@@ -260,11 +272,14 @@ mod tests {
             },
             target_percent: target,
         };
-        repo.import_positions(&[target], &[entry]).await.unwrap();
+        repo.import_positions(PORTFOLIO, &[target], &[entry])
+            .await
+            .unwrap();
     }
 
     async fn set_barca_target(repo: &SqliteRepo, market: &str, target_percent: f64) {
         repo.replace_barca_targets(
+            PORTFOLIO,
             market,
             &[NewBarcaTarget {
                 barca: "Base".to_string(),
@@ -313,14 +328,14 @@ mod tests {
                 FakeProvider::with_prices(&[("HGRU11", 100.0)]),
             ),
         )
-        .refresh_prices()
+        .refresh_prices(PORTFOLIO)
         .await
         .unwrap();
 
         // HGRU11: 10 × (R$100 / 5.0) = $200, plus BTC $10.
         assert_eq!(report.total_value, 210.0);
         assert_eq!(report.per_asset.len(), 2);
-        let totals = repo.fetch_total_history().await.unwrap();
+        let totals = repo.fetch_total_history(PORTFOLIO).await.unwrap();
         assert_eq!(totals.len(), 1, "one snapshot recorded");
         assert_eq!(totals[0].total_value, Some(210.0));
     }
@@ -339,7 +354,7 @@ mod tests {
                 FakeFx(Some(5.2)),
             ),
         )
-        .refresh_prices()
+        .refresh_prices(PORTFOLIO)
         .await
         .unwrap();
 
@@ -369,14 +384,14 @@ mod tests {
                 FakeFx(None),
             ),
         )
-        .refresh_prices()
+        .refresh_prices(PORTFOLIO)
         .await
         .unwrap();
 
         let symbols: Vec<_> = report.per_asset.iter().map(|a| a.symbol.as_str()).collect();
         assert_eq!(symbols, ["BTC"]);
         assert_eq!(report.total_value, 10.0);
-        assert_eq!(repo.fetch_total_history().await.unwrap().len(), 1);
+        assert_eq!(repo.fetch_total_history(PORTFOLIO).await.unwrap().len(), 1);
     }
 
     #[test]
@@ -425,7 +440,7 @@ mod tests {
                 FakeProvider::failing(),
             ),
         )
-        .refresh_prices()
+        .refresh_prices(PORTFOLIO)
         .await
         .unwrap();
 
@@ -442,12 +457,17 @@ mod tests {
             repo.clone(),
             providers(FakeProvider::failing(), FakeProvider::empty()),
         )
-        .refresh_prices()
+        .refresh_prices(PORTFOLIO)
         .await
         .unwrap_err();
 
         assert!(matches!(err, AllocationsError::CryptoPrices(_)));
-        assert!(repo.fetch_total_history().await.unwrap().is_empty());
+        assert!(
+            repo.fetch_total_history(PORTFOLIO)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -464,7 +484,7 @@ mod tests {
                 FakeProvider::empty(),
             ),
         )
-        .refresh_prices()
+        .refresh_prices(PORTFOLIO)
         .await
         .unwrap();
 

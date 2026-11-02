@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useHistoryDashboard } from "./useHistoryDashboard";
 import * as api from "../api/client";
 
+vi.mock("./useCurrentPortfolio", () => ({ useCurrentPortfolio: () => ({ id: 7, name: "Test", access: "manage" }) }));
 vi.mock("../api/client", () => ({ fetchHistory: vi.fn() }));
 
 const ts = "2026-01-01T12:00:00Z";
@@ -21,13 +22,13 @@ const responses = {
 describe("useHistoryDashboard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    api.fetchHistory.mockImplementation(async (level) => responses[level]);
+    api.fetchHistory.mockImplementation(async (_portfolioId, level) => responses[level]);
   });
 
   it("fetches the totals history on mount", async () => {
     const { result } = renderHook(() => useHistoryDashboard());
     await waitFor(() => expect(result.current.data).toHaveLength(1));
-    expect(api.fetchHistory).toHaveBeenCalledWith("totals");
+    expect(api.fetchHistory).toHaveBeenCalledWith(7, "totals");
   });
 
   it("resets the selected series when the level changes", async () => {

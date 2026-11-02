@@ -17,6 +17,7 @@ import { PerGroupTab } from "./components/tabs/PerGroupTab";
 import { BarcaActualTab } from "./components/tabs/BarcaActualTab";
 import { DashboardTab } from "./components/tabs/DashboardTab";
 import { PortfolioTargetsTab } from "./components/tabs/PortfolioTargetsTab";
+import { PortfolioGate } from "./components/PortfolioGate";
 import { BarcaTargetsTab } from "./components/tabs/BarcaTargetsTab";
 import { AdminTab } from "./components/tabs/AdminTab";
 
@@ -50,7 +51,9 @@ function FullPageSpinner() {
   );
 }
 
-function Dashboard({ user, onLogout }) {
+// Everything inside one portfolio. PortfolioGate remounts this when the
+// portfolio changes, so its state always belongs to `portfolio`.
+function Dashboard({ user, portfolio, onLogout }) {
   const {
     allocations,
     groupAllocations,
@@ -73,7 +76,9 @@ function Dashboard({ user, onLogout }) {
   const [barcaFilter, setBarcaFilter] = useState("");
   const [tabIndex, setTabIndex] = useState(0);
 
-  const canImport = user.role === "manager" || user.role === "admin";
+  // Editing needs both a manager role and `manage` access to this
+  // portfolio (the server enforces the same rule).
+  const canImport = (user.role === "manager" || user.role === "admin") && portfolio.access === "manage";
   const isAdmin = user.role === "admin";
   const tabs = [...BASE_TABS, ...(canImport ? MANAGER_TABS : []), ...(isAdmin ? ADMIN_TABS : [])];
   const activeKey = tabs[tabIndex]?.key ?? tabs[0].key;
@@ -193,7 +198,9 @@ function App() {
       ) : !user ? (
         <LoginPage onLogin={login} error={loginError} loggingIn={loggingIn} />
       ) : (
-        <Dashboard user={user} onLogout={logout} />
+        <PortfolioGate onLogout={logout}>
+          {(portfolio) => <Dashboard user={user} portfolio={portfolio} onLogout={logout} />}
+        </PortfolioGate>
       )}
     </ThemeProvider>
   );

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { usePortfolioTargets } from "./usePortfolioTargets";
 import * as api from "../api/client";
 
+vi.mock("./useCurrentPortfolio", () => ({ useCurrentPortfolio: () => ({ id: 7, name: "Test", access: "manage" }) }));
 vi.mock("../api/client", () => ({
   fetchPortfolioTargets: vi.fn(),
   savePortfolioTargets: vi.fn(),
@@ -41,7 +42,7 @@ describe("usePortfolioTargets", () => {
       await result.current.save(rows);
     });
 
-    expect(api.savePortfolioTargets).toHaveBeenCalledWith(rows);
+    expect(api.savePortfolioTargets).toHaveBeenCalledWith(7, rows);
     expect(api.fetchPortfolioTargets).toHaveBeenCalledTimes(2);
     expect(result.current.rows).toEqual(rows);
   });

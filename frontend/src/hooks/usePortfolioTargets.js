@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchPortfolioTargets, savePortfolioTargets } from "../api/client";
+import { useCurrentPortfolio } from "./useCurrentPortfolio";
 
-// Manager+ editable-table data for the Portfolio Targets tab. Fetches when
-// the tab mounts.
+// Manager+ editable-table data for the Portfolio Targets tab, for the
+// current portfolio. Fetches when the tab mounts.
 export function usePortfolioTargets() {
+  const { id: portfolioId } = useCurrentPortfolio();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -12,13 +14,13 @@ export function usePortfolioTargets() {
     setLoading(true);
     setError("");
     try {
-      setRows(await fetchPortfolioTargets());
+      setRows(await fetchPortfolioTargets(portfolioId));
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [portfolioId]);
 
   useEffect(() => {
     refresh();
@@ -26,10 +28,10 @@ export function usePortfolioTargets() {
 
   const save = useCallback(
     async (nextRows) => {
-      await savePortfolioTargets(nextRows);
+      await savePortfolioTargets(portfolioId, nextRows);
       await refresh();
     },
-    [refresh]
+    [portfolioId, refresh]
   );
 
   return { rows, loading, error, refresh, save };

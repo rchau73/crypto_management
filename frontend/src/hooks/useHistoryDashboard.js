@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchHistory } from "../api/client";
 import { computeYAxisDomain } from "../utils/allocationMath";
 import { groupHistoryByPeriod, parseHistoryRows, topSeriesByValue } from "../utils/historyBucketing";
+import { useCurrentPortfolio } from "./useCurrentPortfolio";
 
 const MULTI_SERIES_LEVELS = new Set(["assets", "barca", "groups"]);
 const DEFAULT_SERIES_LIMIT = 5;
@@ -10,6 +11,7 @@ const DEFAULT_SERIES_LIMIT = 5;
 // fetched rows, and the chart data bucketed from them. Fetches when the
 // Dashboard tab mounts and whenever the level changes.
 export function useHistoryDashboard() {
+  const { id: portfolioId } = useCurrentPortfolio();
   const [level, setLevel] = useState("totals");
   const [granularity, setGranularity] = useState("daily");
   const [raw, setRaw] = useState(null);
@@ -25,7 +27,7 @@ export function useHistoryDashboard() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetchHistory(level);
+      const response = await fetchHistory(portfolioId, level);
       if (requestId === latestRequest.current) setRaw({ level, response });
     } catch (err) {
       if (requestId === latestRequest.current) {
@@ -35,7 +37,7 @@ export function useHistoryDashboard() {
     } finally {
       if (requestId === latestRequest.current) setLoading(false);
     }
-  }, [level]);
+  }, [portfolioId, level]);
 
   useEffect(() => {
     refresh();

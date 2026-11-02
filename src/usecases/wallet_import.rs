@@ -22,7 +22,7 @@
 //! source would double it.
 
 use crate::domain::models::{
-    LedgerEntry, NewPortfolioTarget, PositionKey, PositionSource, WalletPosition,
+    LedgerEntry, NewPortfolioTarget, PortfolioId, PositionKey, PositionSource, WalletPosition,
 };
 use crate::domain::repository::{PortfolioRepo, RepoError};
 use crate::usecases::validation::{
@@ -378,23 +378,28 @@ impl WalletImportService {
         Self { portfolio }
     }
 
-    /// Imports `reader` (see the module docs for the rules). All-or-nothing:
-    /// a bad row means nothing is written, and every write is one
-    /// transaction.
-    pub async fn import_csv(&self, reader: impl Read) -> Result<ImportSummary, ImportError> {
+    /// Imports `reader` into `portfolio` (see the module docs for the
+    /// rules). All-or-nothing: a bad row means nothing is written, and every
+    /// write is one transaction.
+    pub async fn import_csv(
+        &self,
+        portfolio: PortfolioId,
+        reader: impl Read,
+    ) -> Result<ImportSummary, ImportError> {
         let csv = parse_rows(reader)?;
-        let positions = self.portfolio.fetch_positions().await?;
-        let sources = self.portfolio.fetch_position_sources().await?;
+        let positions = self.portfolio.fetch_positions(portfolio).await?;
+        let sources = self.portfolio.fetch_position_sources(portfolio).await?;
 
         let plan = plan_import(csv, &positions, &sources);
         if !plan.entries.is_empty() {
             self.portfolio
-                .import_positions(&plan.targets, &plan.entries)
+                .import_positions(portfolio, &plan.targets, &plan.entries)
                 .await?;
         }
 
         let summary = plan.summary;
         tracing::info!(
+            portfolio_id = %portfolio,
             positions_added = summary.positions_added,
             sources_added = summary.sources_added,
             sources_updated = summary.sources_updated,
@@ -406,23 +411,30 @@ impl WalletImportService {
         Ok(summary)
     }
 
-    pub async fn import_csv_file(&self, path: &str) -> Result<ImportSummary, ImportError> {
+    pub async fn import_csv_file(
+        &self,
+        portfolio: PortfolioId,
+        path: &str,
+    ) -> Result<ImportSummary, ImportError> {
         let file = std::fs::File::open(path).map_err(|e| ImportError::Csv(e.into()))?;
-        self.import_csv(file).await
+        self.import_csv(portfolio, file).await
     }
 
-    /// On first start (empty portfolio), seeds from the CSV at `path`.
-    /// Failures are logged, not fatal: the app works without a seed file.
-    pub async fn seed_if_empty(&self, path: &str) {
-        match self.portfolio.fetch_positions().await {
-            Ok(positions) if positions.is_empty() => match self.import_csv_file(path).await {
-                Ok(summary) => tracing::info!(
-                    path,
-                    imported = summary.positions_added,
-                    "Seeded portfolio from CSV"
-                ),
-                Err(e) => tracing::warn!(path, error = %e, "Could not seed portfolio from CSV"),
-            },
+    /// On first start (empty portfolio), seeds `portfolio` from the CSV at
+    /// `path`. Failures are logged, not fatal: the app works without a seed
+    /// file.
+    pub async fn seed_if_empty(&self, portfolio: PortfolioId, path: &str) {
+        match self.portfolio.fetch_positions(portfolio).await {
+            Ok(positions) if positions.is_empty() => {
+                match self.import_csv_file(portfolio, path).await {
+                    Ok(summary) => tracing::info!(
+                        path,
+                        imported = summary.positions_added,
+                        "Seeded portfolio from CSV"
+                    ),
+                    Err(e) => tracing::warn!(path, error = %e, "Could not seed portfolio from CSV"),
+                }
+            }
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "Could not check portfolio before seeding"),
         }
@@ -434,6 +446,10 @@ mod tests {
     use super::*;
     use crate::infra::sqlite::repo::test_support::{entry, target};
     use crate::infra::sqlite::{SqliteRepo, test_repo};
+
+    /// These tests are about one wallet; isolation between portfolios is
+    /// tested in `infra::sqlite::repo` and `tests::integration`.
+    const PORTFOLIO: PortfolioId = PortfolioId::FIRST;
 
     async fn setup() -> (Arc<SqliteRepo>, WalletImportService) {
         let repo = test_repo().await;
@@ -454,13 +470,13 @@ mod tests {
 
         assert_eq!(
             service
-                .import_csv(csv.as_bytes())
+                .import_csv(PORTFOLIO, csv.as_bytes())
                 .await
                 .unwrap()
                 .positions_added,
             2
         );
-        assert_eq!(repo.fetch_positions().await.unwrap().len(), 2);
+        assert_eq!(repo.fetch_positions(PORTFOLIO).await.unwrap().len(), 2);
         assert_eq!(repo.target_of("BTC").await, Some(50.0));
     }
 
@@ -475,7 +491,7 @@ mod tests {
 
         assert_eq!(
             service
-                .import_csv(csv.as_bytes())
+                .import_csv(PORTFOLIO, csv.as_bytes())
                 .await
                 .unwrap()
                 .positions_added,
@@ -496,14 +512,14 @@ mod tests {
 
         assert_eq!(
             service
-                .import_csv(csv.as_bytes())
+                .import_csv(PORTFOLIO, csv.as_bytes())
                 .await
                 .unwrap()
                 .positions_added,
             1
         );
 
-        let positions = repo.fetch_positions().await.unwrap();
+        let positions = repo.fetch_positions(PORTFOLIO).await.unwrap();
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].current_quantity, 157.0);
         assert_eq!(positions[0].source_count, 3);
@@ -520,11 +536,11 @@ mod tests {
             "{HEADER}BTC,Core,Base,10,1.0,Ledger,crypto\nBTC,Core,Base,10,2.0,Ledger,crypto\n"
         );
 
-        service.import_csv(csv.as_bytes()).await.unwrap();
+        service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         assert_eq!(repo.count_ledger_rows("BTC").await, 1);
         assert_eq!(
-            repo.fetch_positions().await.unwrap()[0].current_quantity,
+            repo.fetch_positions(PORTFOLIO).await.unwrap()[0].current_quantity,
             2.0
         );
     }
@@ -534,26 +550,33 @@ mod tests {
         let (repo, service) = setup().await;
         let csv = format!("{HEADER}BTC,Core,Base,60,1.0,A,crypto\nBTC,Core,Base,60,1.0,B,crypto\n");
 
-        let err = service.import_csv(csv.as_bytes()).await.unwrap_err();
+        let err = service
+            .import_csv(PORTFOLIO, csv.as_bytes())
+            .await
+            .unwrap_err();
 
         assert!(matches!(err, ImportError::InvalidRows(_)), "{err:?}");
-        assert!(repo.fetch_positions().await.unwrap().is_empty());
+        assert!(repo.fetch_positions(PORTFOLIO).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn an_existing_position_takes_the_csv_quantity_but_keeps_its_target() {
         let (repo, service) = setup().await;
-        repo.import_positions(&[target("BTC", 40.0)], &[entry("BTC", 1.0, Some("seed"))])
-            .await
-            .unwrap();
+        repo.import_positions(
+            PORTFOLIO,
+            &[target("BTC", 40.0)],
+            &[entry("BTC", 1.0, Some("seed"))],
+        )
+        .await
+        .unwrap();
 
         let csv = format!("{HEADER}BTC,Core,Base,99,5.0,seed,crypto\n");
-        let summary = service.import_csv(csv.as_bytes()).await.unwrap();
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         assert_eq!(summary.positions_added, 0);
         assert_eq!(summary.sources_updated, 1);
         assert_eq!(repo.target_of("BTC").await, Some(40.0));
-        let position = &repo.fetch_positions().await.unwrap()[0];
+        let position = &repo.fetch_positions(PORTFOLIO).await.unwrap()[0];
         assert_eq!(position.current_quantity, 5.0);
         assert_eq!(
             position.source_count, 1,
@@ -575,6 +598,7 @@ mod tests {
         // line of the CSV was dropped because the position already existed.
         let (repo, service) = setup().await;
         repo.import_positions(
+            PORTFOLIO,
             &[target("LINK", 1.0)],
             &[
                 entry("LINK", 121.0, Some("Ledger")),
@@ -589,7 +613,7 @@ mod tests {
              LINK,Core,Base,0,22.0,Coinbase,crypto\n\
              LINK,Core,Base,0,18.0,GateIO,crypto\n"
         );
-        let summary = service.import_csv(csv.as_bytes()).await.unwrap();
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         assert_eq!(summary.sources_added, 1);
         assert_eq!(summary.sources_unchanged, 2);
@@ -598,7 +622,7 @@ mod tests {
             3,
             "only GateIO written"
         );
-        let position = &repo.fetch_positions().await.unwrap()[0];
+        let position = &repo.fetch_positions(PORTFOLIO).await.unwrap()[0];
         assert_eq!(position.current_quantity, 161.0);
         assert_eq!(position.source_count, 3);
     }
@@ -608,9 +632,9 @@ mod tests {
         let (repo, service) = setup().await;
         let csv =
             format!("{HEADER}BTC,Core,Base,50,0.1,Ledger,crypto\nBTC,Core,Base,0,0.2,,crypto\n");
-        service.import_csv(csv.as_bytes()).await.unwrap();
+        service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
-        let summary = service.import_csv(csv.as_bytes()).await.unwrap();
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         assert_eq!(
             summary,
@@ -627,6 +651,7 @@ mod tests {
         // The CSV may be partial: only what it mentions changes.
         let (repo, service) = setup().await;
         repo.import_positions(
+            PORTFOLIO,
             &[target("BTC", 50.0), target("ETH", 50.0)],
             &[
                 entry("BTC", 1.0, Some("Ledger")),
@@ -639,7 +664,7 @@ mod tests {
         .unwrap();
 
         let csv = format!("{HEADER}BTC,Core,Base,50,1.0,Ledger,crypto\n");
-        let summary = service.import_csv(csv.as_bytes()).await.unwrap();
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         let missing: Vec<_> = summary
             .missing_from_csv
@@ -658,7 +683,7 @@ mod tests {
             "a source already at 0 (SOL) is not worth reporting"
         );
         let quantities: Vec<_> = repo
-            .fetch_positions()
+            .fetch_positions(PORTFOLIO)
             .await
             .unwrap()
             .iter()
@@ -670,12 +695,16 @@ mod tests {
     #[tokio::test]
     async fn a_blank_quantity_leaves_an_existing_source_alone() {
         let (repo, service) = setup().await;
-        repo.import_positions(&[target("BTC", 50.0)], &[entry("BTC", 1.0, Some("Ledger"))])
-            .await
-            .unwrap();
+        repo.import_positions(
+            PORTFOLIO,
+            &[target("BTC", 50.0)],
+            &[entry("BTC", 1.0, Some("Ledger"))],
+        )
+        .await
+        .unwrap();
 
         let csv = "symbol,group,barca,notes\nBTC,Core,Base,Ledger\n";
-        let summary = service.import_csv(csv.as_bytes()).await.unwrap();
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         assert_eq!(summary.sources_unchanged, 1);
         assert!(
@@ -683,7 +712,7 @@ mod tests {
             "no target column, no conflict"
         );
         assert_eq!(
-            repo.fetch_positions().await.unwrap()[0].current_quantity,
+            repo.fetch_positions(PORTFOLIO).await.unwrap()[0].current_quantity,
             1.0
         );
     }
@@ -691,17 +720,21 @@ mod tests {
     #[tokio::test]
     async fn empty_and_missing_notes_are_the_same_source() {
         let (repo, service) = setup().await;
-        repo.import_positions(&[target("BTC", 50.0)], &[entry("BTC", 1.0, None)])
-            .await
-            .unwrap();
+        repo.import_positions(
+            PORTFOLIO,
+            &[target("BTC", 50.0)],
+            &[entry("BTC", 1.0, None)],
+        )
+        .await
+        .unwrap();
 
         let csv = format!("{HEADER}BTC,Core,Base,50,2.0,,crypto\n");
-        let summary = service.import_csv(csv.as_bytes()).await.unwrap();
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
         assert_eq!(summary.sources_updated, 1);
         assert!(summary.missing_from_csv.is_empty());
         assert_eq!(
-            repo.fetch_positions().await.unwrap()[0].current_quantity,
+            repo.fetch_positions(PORTFOLIO).await.unwrap()[0].current_quantity,
             2.0
         );
     }
@@ -714,9 +747,9 @@ mod tests {
         let (repo, service) = setup().await;
         let csv = "symbol,group,barca,quantity\nASTR,Holding,Altcoins,55762.8\n";
 
-        service.import_csv(csv.as_bytes()).await.unwrap();
+        service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
 
-        let position = &repo.fetch_positions().await.unwrap()[0];
+        let position = &repo.fetch_positions(PORTFOLIO).await.unwrap()[0];
         assert_eq!(position.current_quantity, 0.0);
         assert_eq!(position.target_percent, 0.0);
         assert_eq!(position.asset_class, "crypto");
@@ -726,13 +759,13 @@ mod tests {
     async fn a_file_without_a_symbol_column_is_a_client_error() {
         let (repo, service) = setup().await;
         let err = service
-            .import_csv("timestamp,price\n2025-01-01,100\n".as_bytes())
+            .import_csv(PORTFOLIO, "timestamp,price\n2025-01-01,100\n".as_bytes())
             .await
             .unwrap_err();
 
         assert!(err.is_client_error());
         assert!(matches!(err, ImportError::MissingSymbolColumn { .. }));
-        assert!(repo.fetch_positions().await.unwrap().is_empty());
+        assert!(repo.fetch_positions(PORTFOLIO).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -742,7 +775,10 @@ mod tests {
             "{HEADER}BTC,Core,Base,50,1.0,,crypto\nETH,Core,Base,50,-2.0,,crypto\nSOL,Core,Base,150,1.0,,crypto\nXPML11,BR,Base,0,1.0,,stocks\n"
         );
 
-        let err = service.import_csv(csv.as_bytes()).await.unwrap_err();
+        let err = service
+            .import_csv(PORTFOLIO, csv.as_bytes())
+            .await
+            .unwrap_err();
 
         let ImportError::InvalidRows(errors) = &err else {
             panic!("expected InvalidRows, got {err:?}");
@@ -752,37 +788,39 @@ mod tests {
         assert!(errors[1].starts_with("line 4:"));
         assert!(errors[2].contains("asset_class"));
         assert!(err.is_client_error());
-        assert!(repo.fetch_positions().await.unwrap().is_empty());
+        assert!(repo.fetch_positions(PORTFOLIO).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn the_same_key_in_another_asset_class_is_a_new_position() {
         let (repo, service) = setup().await;
-        repo.import_positions(&[], &[entry("IBOV", 1.0, None)])
+        repo.import_positions(PORTFOLIO, &[], &[entry("IBOV", 1.0, None)])
             .await
             .unwrap();
 
         let csv = format!("{HEADER}IBOV,Core,Base,30,1.0,,br-equities\n");
         assert_eq!(
             service
-                .import_csv(csv.as_bytes())
+                .import_csv(PORTFOLIO, csv.as_bytes())
                 .await
                 .unwrap()
                 .positions_added,
             1
         );
-        assert_eq!(repo.fetch_positions().await.unwrap().len(), 2);
+        assert_eq!(repo.fetch_positions(PORTFOLIO).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn seed_if_empty_does_nothing_when_the_portfolio_has_data() {
         let (repo, service) = setup().await;
-        repo.import_positions(&[], &[entry("BTC", 1.0, None)])
+        repo.import_positions(PORTFOLIO, &[], &[entry("BTC", 1.0, None)])
             .await
             .unwrap();
 
-        service.seed_if_empty("/definitely/not/a/file.csv").await;
+        service
+            .seed_if_empty(PORTFOLIO, "/definitely/not/a/file.csv")
+            .await;
 
-        assert_eq!(repo.fetch_positions().await.unwrap().len(), 1);
+        assert_eq!(repo.fetch_positions(PORTFOLIO).await.unwrap().len(), 1);
     }
 }
