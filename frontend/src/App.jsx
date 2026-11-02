@@ -20,6 +20,7 @@ import { PortfolioTargetsTab } from "./components/tabs/PortfolioTargetsTab";
 import { PortfolioGate } from "./components/PortfolioGate";
 import { BarcaTargetsTab } from "./components/tabs/BarcaTargetsTab";
 import { AdminTab } from "./components/tabs/AdminTab";
+import { AccountsTab } from "./components/tabs/AccountsTab";
 
 // Named keys instead of raw tab indices — inserting/reordering a tab (e.g.
 // the Manager-only ones below) can't silently shift which panel a stale
@@ -37,6 +38,9 @@ const MANAGER_TABS = [
   { key: "portfolio-targets", label: "Portfolio Targets" },
   { key: "barca-targets", label: "BARCA Targets" },
 ];
+// Any manager can create accounts, even one with view-only access to the
+// portfolio on screen (a new account is theirs to manage).
+const ACCOUNT_TABS = [{ key: "accounts", label: "Accounts" }];
 const ADMIN_TABS = [{ key: "admin", label: "Admin" }];
 
 function uniqueSorted(values) {
@@ -79,8 +83,14 @@ function Dashboard({ user, portfolio, onLogout }) {
   // Editing needs both a manager role and `manage` access to this
   // portfolio (the server enforces the same rule).
   const canImport = (user.role === "manager" || user.role === "admin") && portfolio.access === "manage";
+  const isManager = user.role === "manager" || user.role === "admin";
   const isAdmin = user.role === "admin";
-  const tabs = [...BASE_TABS, ...(canImport ? MANAGER_TABS : []), ...(isAdmin ? ADMIN_TABS : [])];
+  const tabs = [
+    ...BASE_TABS,
+    ...(canImport ? MANAGER_TABS : []),
+    ...(isManager ? ACCOUNT_TABS : []),
+    ...(isAdmin ? ADMIN_TABS : []),
+  ];
   const activeKey = tabs[tabIndex]?.key ?? tabs[0].key;
 
   const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
@@ -181,6 +191,7 @@ function Dashboard({ user, portfolio, onLogout }) {
         {activeKey === "dashboard" && <DashboardTab />}
         {canImport && activeKey === "portfolio-targets" && <PortfolioTargetsTab />}
         {canImport && activeKey === "barca-targets" && <BarcaTargetsTab />}
+        {isManager && activeKey === "accounts" && <AccountsTab />}
         {isAdmin && activeKey === "admin" && <AdminTab currentUsername={user.username} />}
       </Container>
     </>
