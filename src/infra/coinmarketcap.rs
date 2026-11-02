@@ -122,9 +122,29 @@ impl CoinMarketCapProvider {
     }
 }
 
+/// CoinMarketCap rejects the whole call (400) if any symbol has anything
+/// but letters and digits, so such a symbol (e.g. "#RAY") is left out and
+/// stays unpriced, as it was with the old listing call.
+fn askable(symbols: &[String]) -> (Vec<String>, Vec<&str>) {
+    let (ok, bad): (Vec<&String>, Vec<&String>) = symbols
+        .iter()
+        .partition(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()));
+    (
+        ok.into_iter().cloned().collect(),
+        bad.into_iter().map(String::as_str).collect(),
+    )
+}
+
 #[async_trait]
 impl CryptoProvider for CoinMarketCapProvider {
     async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        let (symbols, skipped) = askable(symbols);
+        if !skipped.is_empty() {
+            tracing::warn!(
+                ?skipped,
+                "Not asking CoinMarketCap for symbols that aren't letters and digits — they stay unpriced"
+            );
+        }
         let mut quotes = Vec::new();
         for batch in symbols.chunks(SYMBOLS_PER_CALL) {
             quotes.extend(self.fetch_batch(batch).await?);
@@ -152,6 +172,15 @@ mod tests {
             symbol: symbol.into(),
             price,
         }
+    }
+
+    #[test]
+    fn symbols_that_would_make_coinmarketcap_reject_the_call_are_left_out() {
+        // Regression: a "#RAY" position made every refresh fail with 400.
+        let symbols = ["BTC", "#RAY", "ETH", "", "A B", "1INCH"].map(String::from);
+        let (ok, skipped) = askable(&symbols);
+        assert_eq!(ok, ["BTC", "ETH", "1INCH"]);
+        assert_eq!(skipped, ["#RAY", "", "A B"]);
     }
 
     #[test]

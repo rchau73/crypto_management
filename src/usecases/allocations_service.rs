@@ -93,8 +93,9 @@ pub struct AllocationsService {
     refresh_interval: Duration,
     book: RwLock<Option<Arc<PriceBook>>>,
     /// Held while refreshing, so concurrent requests wait for one refresh
-    /// instead of each calling the APIs. Holds when the last one failed.
-    refresh: Mutex<Option<Instant>>,
+    /// instead of each calling the APIs. Holds when and why the last one
+    /// failed.
+    refresh: Mutex<Option<(Instant, String)>>,
 }
 
 impl AllocationsService {
@@ -155,11 +156,15 @@ impl AllocationsService {
             return Ok(book);
         }
         let cached = self.book.read().await.clone();
-        let failed_recently = last_failure.is_some_and(|t| t.elapsed() < RETRY_AFTER_FAILURE);
-        if failed_recently {
-            return cached.ok_or_else(|| {
-                AllocationsError::CryptoPrices("the last attempt failed; retrying shortly".into())
-            });
+        if let Some((failed_at, reason)) = last_failure.as_ref() {
+            if failed_at.elapsed() < RETRY_AFTER_FAILURE {
+                // Say why, not just that it failed: this is what the user sees.
+                return cached.ok_or_else(|| {
+                    AllocationsError::CryptoPrices(
+                        format!("{reason} (retrying within a minute)").into(),
+                    )
+                });
+            }
         }
         match self.refresh_all().await {
             Ok(book) => {
@@ -167,7 +172,7 @@ impl AllocationsService {
                 Ok(book)
             }
             Err(e) => {
-                *last_failure = Some(Instant::now());
+                *last_failure = Some((Instant::now(), failure_reason(&e)));
                 match cached {
                     Some(old) => {
                         tracing::warn!(
@@ -371,6 +376,14 @@ impl AllocationsService {
                 Vec::new()
             }
         }
+    }
+}
+
+/// The provider's own message, without our "failed to fetch…" prefix,
+/// which the error adds again when it is shown.
+fn failure_reason(e: &AllocationsError) -> String {
+    match e {
+        AllocationsError::CryptoPrices(inner) | AllocationsError::Repo(inner) => inner.to_string(),
     }
 }
 
@@ -971,6 +984,8 @@ mod tests {
         for _ in 0..3 {
             let err = service.current_report(PORTFOLIO).await.unwrap_err();
             assert!(matches!(err, AllocationsError::CryptoPrices(_)), "{err}");
+            // Regression: it said only "the last attempt failed".
+            assert!(err.to_string().contains("CoinMarketCap is down"), "{err}");
         }
         assert_eq!(crypto.inner.calls(), 1, "polls during the retry delay wait");
     }
