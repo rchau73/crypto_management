@@ -6,6 +6,9 @@ import { usePortfolioTargets } from "../../hooks/usePortfolioTargets";
 import * as api from "../../api/client";
 
 vi.mock("../../hooks/usePortfolioTargets");
+vi.mock("../../hooks/useCurrentPortfolio", () => ({
+  useCurrentPortfolio: () => ({ id: 7, name: "Test", access: "manage" }),
+}));
 vi.mock("../../api/client", () => ({
   fetchBarcaTargets: vi.fn(),
   correctWalletQuantity: vi.fn(),
@@ -138,7 +141,7 @@ describe("PortfolioTargetsTab", () => {
     await user.click(within(btcRow).getByRole("button", { name: "Salvar" }));
 
     await waitFor(() => {
-      expect(api.correctWalletQuantity).toHaveBeenCalledWith({
+      expect(api.correctWalletQuantity).toHaveBeenCalledWith(7, {
         symbol: "BTC",
         group_name: "Core",
         barca: "Base",
@@ -316,8 +319,8 @@ describe("PortfolioTargetsTab", () => {
     setupHook();
     render(<PortfolioTargetsTab />);
     await waitFor(() => {
-      expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BullMarket");
-      expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BearMarket");
+      expect(api.fetchBarcaTargets).toHaveBeenCalledWith(7, "BullMarket");
+      expect(api.fetchBarcaTargets).toHaveBeenCalledWith(7, "BearMarket");
     });
   });
 

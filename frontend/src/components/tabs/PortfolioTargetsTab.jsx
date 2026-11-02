@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import { usePortfolioTargets } from "../../hooks/usePortfolioTargets";
+import { useCurrentPortfolio } from "../../hooks/useCurrentPortfolio";
 import { useSortableData } from "../../hooks/useSortableData";
 import { SortableTableHead } from "../SortableTableHead";
 import { fetchBarcaTargets } from "../../api/client";
@@ -46,14 +47,16 @@ const COLUMNS = [
 
 const NO_FILTERS = Object.fromEntries(COLUMNS.filter((c) => c.filterable).map((c) => [c.key, ""]));
 
-// BARCA names from both market profiles, used only as typing suggestions.
+// BARCA names from both market profiles of the current portfolio, used only
+// as typing suggestions.
 function useBarcaNameSuggestions() {
+  const { id: portfolioId } = useCurrentPortfolio();
   const [names, setNames] = useState([]);
   useEffect(() => {
-    Promise.all([fetchBarcaTargets("BullMarket"), fetchBarcaTargets("BearMarket")])
+    Promise.all([fetchBarcaTargets(portfolioId, "BullMarket"), fetchBarcaTargets(portfolioId, "BearMarket")])
       .then(([bull, bear]) => setNames(uniqueSorted([...bull, ...bear].map((t) => t.barca))))
       .catch(() => setNames([]));
-  }, []);
+  }, [portfolioId]);
   return names;
 }
 

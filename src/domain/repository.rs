@@ -1,11 +1,15 @@
 //! Persistence "ports": the traits use cases depend on. `infra::sqlite`
 //! implements all of them; tests can swap in fakes. Each trait covers one
 //! area so a use case only depends on what it actually uses.
+//!
+//! Every wallet, target and history method takes the `PortfolioId` it reads
+//! or writes, and only ever touches that portfolio's rows. That parameter is
+//! what keeps separate wallets from mixing.
 
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
-    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionSource, RefreshToken, TotalHistoryRow,
-    User, WalletPosition,
+    LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
+    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, User, WalletPosition,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -37,19 +41,27 @@ impl std::error::Error for UniqueViolation {}
 #[async_trait]
 pub trait PortfolioRepo: Send + Sync {
     /// One row per position key (the `wallet_allocations_current` view).
-    async fn fetch_positions(&self) -> RepoResult<Vec<WalletPosition>>;
+    async fn fetch_positions(&self, portfolio: PortfolioId) -> RepoResult<Vec<WalletPosition>>;
 
     /// The latest ledger row of every source, i.e. `fetch_positions`
     /// before the sources are summed.
-    async fn fetch_position_sources(&self) -> RepoResult<Vec<PositionSource>>;
+    async fn fetch_position_sources(
+        &self,
+        portfolio: PortfolioId,
+    ) -> RepoResult<Vec<PositionSource>>;
 
     /// Appends ledger rows in one transaction (all or nothing).
-    async fn append_ledger_entries(&self, entries: &[LedgerEntry]) -> RepoResult<()>;
+    async fn append_ledger_entries(
+        &self,
+        portfolio: PortfolioId,
+        entries: &[LedgerEntry],
+    ) -> RepoResult<()>;
 
-    /// Replaces every portfolio target with `targets` and appends
+    /// Replaces every target of the portfolio with `targets` and appends
     /// `new_entries`, in one transaction.
     async fn replace_targets(
         &self,
+        portfolio: PortfolioId,
         targets: &[NewPortfolioTarget],
         new_entries: &[LedgerEntry],
         updated_by: Option<i64>,
@@ -60,6 +72,7 @@ pub trait PortfolioRepo: Send + Sync {
     /// Used by CSV import.
     async fn import_positions(
         &self,
+        portfolio: PortfolioId,
         targets: &[NewPortfolioTarget],
         new_entries: &[LedgerEntry],
     ) -> RepoResult<()>;
@@ -67,12 +80,17 @@ pub trait PortfolioRepo: Send + Sync {
 
 #[async_trait]
 pub trait BarcaTargetRepo: Send + Sync {
-    async fn fetch_barca_targets(&self, market: &str) -> RepoResult<Vec<BarcaTarget>>;
+    async fn fetch_barca_targets(
+        &self,
+        portfolio: PortfolioId,
+        market: &str,
+    ) -> RepoResult<Vec<BarcaTarget>>;
 
     /// Replaces every target of `market` with `targets`, in one transaction
     /// (a barca left out is deleted).
     async fn replace_barca_targets(
         &self,
+        portfolio: PortfolioId,
         market: &str,
         targets: &[NewBarcaTarget],
         updated_by: Option<i64>,
@@ -84,19 +102,65 @@ pub trait BarcaTargetRepo: Send + Sync {
 pub trait SnapshotRepo: Send + Sync {
     /// Writes the full report plus per-asset/group/barca/total history rows
     /// in one transaction.
-    async fn record_snapshot(&self, snapshot: &AllocationSnapshot) -> RepoResult<()>;
+    async fn record_snapshot(
+        &self,
+        portfolio: PortfolioId,
+        snapshot: &AllocationSnapshot,
+    ) -> RepoResult<()>;
 
-    // These return the whole history, oldest first. Fine for a personal
-    // dashboard (a few rows per click); add a date range if it ever grows
-    // large enough to be slow.
-    async fn fetch_asset_history(&self) -> RepoResult<Vec<AssetHistoryRow>>;
-    async fn fetch_group_history(&self) -> RepoResult<Vec<GroupHistoryRow>>;
-    async fn fetch_barca_history(&self) -> RepoResult<Vec<BarcaHistoryRow>>;
-    async fn fetch_total_history(&self) -> RepoResult<Vec<TotalHistoryRow>>;
+    // These return the portfolio's whole history, oldest first. Fine for a
+    // personal dashboard (a few rows per click); add a date range if it ever
+    // grows large enough to be slow.
+    async fn fetch_asset_history(&self, portfolio: PortfolioId)
+    -> RepoResult<Vec<AssetHistoryRow>>;
+    async fn fetch_group_history(&self, portfolio: PortfolioId)
+    -> RepoResult<Vec<GroupHistoryRow>>;
+    async fn fetch_barca_history(&self, portfolio: PortfolioId)
+    -> RepoResult<Vec<BarcaHistoryRow>>;
+    async fn fetch_total_history(&self, portfolio: PortfolioId)
+    -> RepoResult<Vec<TotalHistoryRow>>;
 
-    /// Price (USD) of every symbol in the most recent snapshot. Empty if
-    /// prices were never updated.
-    async fn fetch_latest_prices(&self) -> RepoResult<HashMap<String, f64>>;
+    /// Price (USD) of every symbol in the portfolio's most recent snapshot.
+    /// Empty if its prices were never updated.
+    async fn fetch_latest_prices(&self, portfolio: PortfolioId)
+    -> RepoResult<HashMap<String, f64>>;
+}
+
+/// The portfolios themselves and who may open them.
+#[async_trait]
+pub trait PortfolioDirectoryRepo: Send + Sync {
+    /// Every portfolio `user_id` is a member of, by name.
+    async fn list_portfolios_for_user(&self, user_id: i64) -> RepoResult<Vec<PortfolioSummary>>;
+
+    /// `user_id`'s access to `portfolio`, or `None` if not a member (or no
+    /// such portfolio — callers must not be able to tell the two apart).
+    async fn find_access(
+        &self,
+        portfolio: PortfolioId,
+        user_id: i64,
+    ) -> RepoResult<Option<PortfolioAccess>>;
+
+    /// Creates a portfolio with `owner_id` as its `manage` member and, if
+    /// given, a copy of `copy_barca_from`'s BARCA targets — in one
+    /// transaction. A taken name is a `UniqueViolation`.
+    async fn create_portfolio(
+        &self,
+        name: &str,
+        owner_id: i64,
+        copy_barca_from: Option<PortfolioId>,
+    ) -> RepoResult<PortfolioId>;
+
+    /// Returns `false` if there is no such portfolio. A taken name is a
+    /// `UniqueViolation`.
+    async fn rename_portfolio(&self, portfolio: PortfolioId, name: &str) -> RepoResult<bool>;
+
+    /// Adds `user_id` as a member, or changes the access of one already.
+    async fn set_member(
+        &self,
+        portfolio: PortfolioId,
+        user_id: i64,
+        access: PortfolioAccess,
+    ) -> RepoResult<()>;
 }
 
 pub struct NewUser<'a> {

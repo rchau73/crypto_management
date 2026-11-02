@@ -5,7 +5,8 @@
 //! database, and then written in a single transaction.
 
 use crate::domain::models::{
-    BarcaTarget, LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PositionKey, WalletPosition,
+    BarcaTarget, LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioId, PositionKey,
+    WalletPosition,
 };
 use crate::domain::repository::{BarcaTargetRepo, PortfolioRepo, RepoError};
 use crate::usecases::validation::{
@@ -121,8 +122,11 @@ impl TargetsService {
         }
     }
 
-    pub async fn list_positions(&self) -> Result<Vec<WalletPosition>, TargetsError> {
-        Ok(self.portfolio.fetch_positions().await?)
+    pub async fn list_positions(
+        &self,
+        portfolio: PortfolioId,
+    ) -> Result<Vec<WalletPosition>, TargetsError> {
+        Ok(self.portfolio.fetch_positions(portfolio).await?)
     }
 
     /// Replaces every portfolio target with `rows` (they must sum to 100%).
@@ -134,6 +138,7 @@ impl TargetsService {
     /// holding.
     pub async fn save_portfolio_targets(
         &self,
+        portfolio: PortfolioId,
         rows: Vec<TargetRow>,
         updated_by: Option<i64>,
     ) -> Result<(), TargetsError> {
@@ -151,7 +156,7 @@ impl TargetsService {
 
         let existing: HashSet<PositionKey> = self
             .portfolio
-            .fetch_positions()
+            .fetch_positions(portfolio)
             .await?
             .iter()
             .map(|p| p.key())
@@ -179,7 +184,7 @@ impl TargetsService {
             .collect();
 
         self.portfolio
-            .replace_targets(&targets, &new_entries, updated_by)
+            .replace_targets(portfolio, &targets, &new_entries, updated_by)
             .await?;
         Ok(())
     }
@@ -190,6 +195,7 @@ impl TargetsService {
     /// which source the new number belongs to.
     pub async fn correct_quantity(
         &self,
+        portfolio: PortfolioId,
         correction: QuantityCorrection,
     ) -> Result<(), TargetsError> {
         check_asset_class(&correction.asset_class)?;
@@ -198,7 +204,7 @@ impl TargetsService {
         let key = correction.key();
         let position = self
             .portfolio
-            .fetch_positions()
+            .fetch_positions(portfolio)
             .await?
             .into_iter()
             .find(|p| p.key() == key)
@@ -223,17 +229,27 @@ impl TargetsService {
             // source instead of being added as a second one.
             notes: position.notes,
         };
-        self.portfolio.append_ledger_entries(&[entry]).await?;
+        self.portfolio
+            .append_ledger_entries(portfolio, &[entry])
+            .await?;
         Ok(())
     }
 
-    pub async fn list_barca_targets(&self, market: &str) -> Result<Vec<BarcaTarget>, TargetsError> {
-        Ok(self.barca_targets.fetch_barca_targets(market).await?)
+    pub async fn list_barca_targets(
+        &self,
+        portfolio: PortfolioId,
+        market: &str,
+    ) -> Result<Vec<BarcaTarget>, TargetsError> {
+        Ok(self
+            .barca_targets
+            .fetch_barca_targets(portfolio, market)
+            .await?)
     }
 
     /// Replaces every BARCA target of `market` (they must sum to 100%).
     pub async fn save_barca_targets(
         &self,
+        portfolio: PortfolioId,
         market: &str,
         targets: &[NewBarcaTarget],
         updated_by: Option<i64>,
@@ -253,7 +269,7 @@ impl TargetsService {
         check_sums_to_100(targets.iter().map(|t| t.target_percent))?;
 
         self.barca_targets
-            .replace_barca_targets(market, targets, updated_by)
+            .replace_barca_targets(portfolio, market, targets, updated_by)
             .await?;
         Ok(())
     }
@@ -264,6 +280,10 @@ mod tests {
     use super::*;
     use crate::infra::sqlite::repo::test_support::{barca, entry};
     use crate::infra::sqlite::{SqliteRepo, test_repo};
+
+    /// These tests are about one wallet; isolation between portfolios is
+    /// tested in `infra::sqlite::repo` and `tests::integration`.
+    const PORTFOLIO: PortfolioId = PortfolioId::FIRST;
 
     async fn setup() -> (Arc<SqliteRepo>, TargetsService) {
         let repo = test_repo().await;
@@ -298,11 +318,11 @@ mod tests {
         rows: Vec<TargetRow>,
     ) -> String {
         let err = service
-            .save_portfolio_targets(rows, None)
+            .save_portfolio_targets(PORTFOLIO, rows, None)
             .await
             .unwrap_err();
         assert!(matches!(err, TargetsError::Invalid(_)), "{err:?}");
-        assert!(repo.fetch_positions().await.unwrap().is_empty());
+        assert!(repo.fetch_positions(PORTFOLIO).await.unwrap().is_empty());
         err.to_string()
     }
 
@@ -365,6 +385,7 @@ mod tests {
         let (_, service) = setup().await;
         service
             .save_portfolio_targets(
+                PORTFOLIO,
                 vec![row("BTC", 33.34), row("ETH", 33.33), row("SOL", 33.33)],
                 None,
             )
@@ -376,11 +397,11 @@ mod tests {
     async fn a_new_symbol_gets_a_seed_ledger_row_with_its_starting_quantity() {
         let (repo, service) = setup().await;
         service
-            .save_portfolio_targets(vec![row("HGRU11", 100.0)], None)
+            .save_portfolio_targets(PORTFOLIO, vec![row("HGRU11", 100.0)], None)
             .await
             .unwrap();
 
-        let positions = repo.fetch_positions().await.unwrap();
+        let positions = repo.fetch_positions(PORTFOLIO).await.unwrap();
         assert_eq!(positions[0].current_quantity, 1.0);
         assert_eq!(positions[0].target_percent, 100.0);
     }
@@ -390,10 +411,13 @@ mod tests {
         // Regression: re-submitting the displayed (summed) quantity used to
         // be written back as one more source, doubling the holding.
         let (repo, service) = setup().await;
-        repo.append_ledger_entries(&[
-            entry("BTC", 1.0, Some("Binance")),
-            entry("BTC", 2.0, Some("Ledger")),
-        ])
+        repo.append_ledger_entries(
+            PORTFOLIO,
+            &[
+                entry("BTC", 1.0, Some("Binance")),
+                entry("BTC", 2.0, Some("Ledger")),
+            ],
+        )
         .await
         .unwrap();
 
@@ -401,11 +425,11 @@ mod tests {
         edited.current_quantity = Some(3.0);
         edited.notes = Some("Binance | Ledger".to_string());
         service
-            .save_portfolio_targets(vec![edited], None)
+            .save_portfolio_targets(PORTFOLIO, vec![edited], None)
             .await
             .unwrap();
 
-        let position = &repo.fetch_positions().await.unwrap()[0];
+        let position = &repo.fetch_positions(PORTFOLIO).await.unwrap()[0];
         assert_eq!(position.current_quantity, 3.0);
         assert_eq!(position.target_percent, 100.0);
         assert_eq!(repo.count_ledger_rows("BTC").await, 2);
@@ -415,11 +439,11 @@ mod tests {
     async fn a_later_save_can_lower_a_target() {
         let (repo, service) = setup().await;
         service
-            .save_portfolio_targets(vec![row("BTC", 60.0), row("ETH", 40.0)], None)
+            .save_portfolio_targets(PORTFOLIO, vec![row("BTC", 60.0), row("ETH", 40.0)], None)
             .await
             .unwrap();
         service
-            .save_portfolio_targets(vec![row("BTC", 30.0), row("ETH", 70.0)], None)
+            .save_portfolio_targets(PORTFOLIO, vec![row("BTC", 30.0), row("ETH", 70.0)], None)
             .await
             .unwrap();
         assert_eq!(repo.target_of("BTC").await, Some(30.0));
@@ -430,16 +454,16 @@ mod tests {
     #[tokio::test]
     async fn correcting_a_single_source_replaces_its_quantity() {
         let (repo, service) = setup().await;
-        repo.append_ledger_entries(&[entry("HGRU11", 10.0, Some("XP"))])
+        repo.append_ledger_entries(PORTFOLIO, &[entry("HGRU11", 10.0, Some("XP"))])
             .await
             .unwrap();
 
         service
-            .correct_quantity(correction("HGRU11", 67.0))
+            .correct_quantity(PORTFOLIO, correction("HGRU11", 67.0))
             .await
             .unwrap();
 
-        let position = &repo.fetch_positions().await.unwrap()[0];
+        let position = &repo.fetch_positions(PORTFOLIO).await.unwrap()[0];
         assert_eq!(position.current_quantity, 67.0, "replaced, not added");
         assert_eq!(position.source_count, 1);
     }
@@ -447,17 +471,17 @@ mod tests {
     #[tokio::test]
     async fn correcting_a_source_without_notes_works_too() {
         let (repo, service) = setup().await;
-        repo.append_ledger_entries(&[entry("BTC", 1.0, None)])
+        repo.append_ledger_entries(PORTFOLIO, &[entry("BTC", 1.0, None)])
             .await
             .unwrap();
 
         service
-            .correct_quantity(correction("BTC", 2.0))
+            .correct_quantity(PORTFOLIO, correction("BTC", 2.0))
             .await
             .unwrap();
 
         assert_eq!(
-            repo.fetch_positions().await.unwrap()[0].current_quantity,
+            repo.fetch_positions(PORTFOLIO).await.unwrap()[0].current_quantity,
             2.0
         );
     }
@@ -466,18 +490,21 @@ mod tests {
     async fn correcting_a_multi_source_position_is_refused() {
         // Includes the NULL-notes case the old " | " check missed.
         let (repo, service) = setup().await;
-        repo.append_ledger_entries(&[entry("BTC", 1.0, None), entry("BTC", 2.0, Some("Binance"))])
-            .await
-            .unwrap();
+        repo.append_ledger_entries(
+            PORTFOLIO,
+            &[entry("BTC", 1.0, None), entry("BTC", 2.0, Some("Binance"))],
+        )
+        .await
+        .unwrap();
 
         let err = service
-            .correct_quantity(correction("BTC", 5.0))
+            .correct_quantity(PORTFOLIO, correction("BTC", 5.0))
             .await
             .unwrap_err();
 
         assert!(matches!(err, TargetsError::Invalid(_)));
         assert_eq!(
-            repo.fetch_positions().await.unwrap()[0].current_quantity,
+            repo.fetch_positions(PORTFOLIO).await.unwrap()[0].current_quantity,
             3.0
         );
     }
@@ -486,7 +513,7 @@ mod tests {
     async fn correcting_an_unknown_position_is_not_found() {
         let (_, service) = setup().await;
         let err = service
-            .correct_quantity(correction("GHOST", 1.0))
+            .correct_quantity(PORTFOLIO, correction("GHOST", 1.0))
             .await
             .unwrap_err();
         assert!(matches!(err, TargetsError::NotFound(_)));
@@ -495,14 +522,14 @@ mod tests {
     #[tokio::test]
     async fn correcting_with_a_bad_value_is_refused() {
         let (repo, service) = setup().await;
-        repo.append_ledger_entries(&[entry("BTC", 1.0, None)])
+        repo.append_ledger_entries(PORTFOLIO, &[entry("BTC", 1.0, None)])
             .await
             .unwrap();
 
         let mut bad_class = correction("BTC", 1.0);
         bad_class.asset_class = "nope".to_string();
         for bad in [correction("BTC", -1.0), bad_class] {
-            let err = service.correct_quantity(bad).await.unwrap_err();
+            let err = service.correct_quantity(PORTFOLIO, bad).await.unwrap_err();
             assert!(matches!(err, TargetsError::Invalid(_)));
         }
     }
@@ -520,13 +547,13 @@ mod tests {
         ];
         for (market, targets) in bad_requests {
             let err = service
-                .save_barca_targets(market, &targets, None)
+                .save_barca_targets(PORTFOLIO, market, &targets, None)
                 .await
                 .unwrap_err();
             assert!(matches!(err, TargetsError::Invalid(_)));
         }
         assert!(
-            repo.fetch_barca_targets("BullMarket")
+            repo.fetch_barca_targets(PORTFOLIO, "BullMarket")
                 .await
                 .unwrap()
                 .is_empty()
@@ -537,11 +564,12 @@ mod tests {
     async fn barca_targets_replace_the_full_set() {
         let (repo, service) = setup().await;
         service
-            .save_barca_targets("BullMarket", &[barca("Base", 100.0)], None)
+            .save_barca_targets(PORTFOLIO, "BullMarket", &[barca("Base", 100.0)], None)
             .await
             .unwrap();
         service
             .save_barca_targets(
+                PORTFOLIO,
                 "BullMarket",
                 &[barca("Base", 60.0), barca("IBOVE", 40.0)],
                 None,
@@ -549,7 +577,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            repo.fetch_barca_targets("BullMarket").await.unwrap().len(),
+            repo.fetch_barca_targets(PORTFOLIO, "BullMarket")
+                .await
+                .unwrap()
+                .len(),
             2
         );
     }

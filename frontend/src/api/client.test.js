@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { downloadWalletCsv, fetchAllocations, fetchCurrentUser, login, uploadWalletCsv } from "./client";
+import {
+  createPortfolio,
+  downloadWalletCsv,
+  fetchAllocations,
+  fetchBarcaTargets,
+  fetchCurrentUser,
+  fetchPortfolios,
+  login,
+  uploadWalletCsv,
+} from "./client";
 
 function jsonResponse(status, body) {
   return {
@@ -20,13 +29,13 @@ describe("apiFetch (via fetchAllocations)", () => {
 
   it("sends credentials so the session cookie is included", async () => {
     fetch.mockResolvedValueOnce(jsonResponse(200, { per_asset: [] }));
-    await fetchAllocations();
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/allocations"), expect.objectContaining({ credentials: "include" }));
+    await fetchAllocations(7);
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/portfolios/7/allocations"), expect.objectContaining({ credentials: "include" }));
   });
 
   it("returns data directly when the first request succeeds", async () => {
     fetch.mockResolvedValueOnce(jsonResponse(200, { per_asset: ["ok"] }));
-    const result = await fetchAllocations();
+    const result = await fetchAllocations(7);
     expect(result).toEqual({ per_asset: ["ok"] });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -37,7 +46,7 @@ describe("apiFetch (via fetchAllocations)", () => {
       .mockResolvedValueOnce(jsonResponse(200, {})) // /api/auth/refresh
       .mockResolvedValueOnce(jsonResponse(200, { per_asset: ["retried"] })); // retried request
 
-    const result = await fetchAllocations();
+    const result = await fetchAllocations(7);
 
     expect(result).toEqual({ per_asset: ["retried"] });
     expect(fetch).toHaveBeenCalledTimes(3);
@@ -51,7 +60,7 @@ describe("apiFetch (via fetchAllocations)", () => {
 
     // Surfaces the original endpoint's error, not the refresh endpoint's —
     // that's the more useful message for whoever's showing/logging it.
-    await expect(fetchAllocations()).rejects.toThrow("expired");
+    await expect(fetchAllocations(7)).rejects.toThrow("expired");
     expect(fetch).toHaveBeenCalledTimes(2); // no third (retried) call
   });
 
@@ -82,12 +91,12 @@ describe("apiFetch (via fetchAllocations)", () => {
     fetch.mockResolvedValueOnce(jsonResponse(200, { imported: 3 }));
     const file = new File(["symbol,group\nBTC,Core\n"], "wallet.csv", { type: "text/csv" });
 
-    const result = await uploadWalletCsv(file);
+    const result = await uploadWalletCsv(7, file);
 
     expect(result).toEqual({ imported: 3 });
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, options] = fetch.mock.calls[0];
-    expect(url).toContain("/api/import_wallets/upload");
+    expect(url).toContain("/api/portfolios/7/import_wallets/upload");
     expect(options.method).toBe("POST");
     expect(options.body).toBeInstanceOf(FormData);
     expect(options.body.get("file")).toBe(file);
@@ -104,20 +113,47 @@ describe("apiFetch (via fetchAllocations)", () => {
       blob: async () => blob,
     });
 
-    const result = await downloadWalletCsv();
+    const result = await downloadWalletCsv(7);
 
-    expect(fetch.mock.calls[0][0]).toContain("/api/export_wallets");
+    expect(fetch.mock.calls[0][0]).toContain("/api/portfolios/7/export_wallets");
     expect(result).toEqual({ blob, filename: "wallet_allocations-2026-10-02.csv" });
   });
 
   it("downloadWalletCsv falls back to a default filename without Content-Disposition", async () => {
     fetch.mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), blob: async () => new Blob([]) });
-    const { filename } = await downloadWalletCsv();
+    const { filename } = await downloadWalletCsv(7);
     expect(filename).toBe("wallet_allocations.csv");
   });
 
   it("downloadWalletCsv surfaces the server's error message", async () => {
     fetch.mockResolvedValueOnce(jsonResponse(403, { error: "forbidden" }));
-    await expect(downloadWalletCsv()).rejects.toThrow("forbidden");
+    await expect(downloadWalletCsv(7)).rejects.toThrow("forbidden");
+  });
+});
+
+describe("portfolio-scoped calls", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("puts the portfolio id in the path, never in a shared default", async () => {
+    fetch.mockResolvedValue(jsonResponse(200, []));
+    await fetchBarcaTargets(3, "Bull Market");
+    expect(fetch.mock.calls[0][0]).toMatch(/\/api\/portfolios\/3\/barca\/targets\?market=Bull%20Market$/);
+  });
+
+  it("lists and creates portfolios", async () => {
+    fetch.mockResolvedValue(jsonResponse(200, []));
+    await fetchPortfolios();
+    expect(fetch.mock.calls[0][0]).toMatch(/\/api\/portfolios$/);
+
+    await createPortfolio("Spouse", 1);
+    const [url, options] = fetch.mock.calls[1];
+    expect(url).toMatch(/\/api\/portfolios$/);
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({ name: "Spouse", copy_barca_from: 1 });
   });
 });

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useBarcaTargets } from "./useBarcaTargets";
 import * as api from "../api/client";
 
+vi.mock("./useCurrentPortfolio", () => ({ useCurrentPortfolio: () => ({ id: 7, name: "Test", access: "manage" }) }));
 vi.mock("../api/client", () => ({
   fetchBarcaTargets: vi.fn(),
   saveBarcaTargets: vi.fn(),
@@ -17,7 +18,7 @@ describe("useBarcaTargets", () => {
     api.fetchBarcaTargets.mockResolvedValue([{ barca: "Base", target_percent: 100 }]);
     const { result } = renderHook(() => useBarcaTargets("BullMarket"));
     await waitFor(() => expect(result.current.targets).toHaveLength(1));
-    expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BullMarket");
+    expect(api.fetchBarcaTargets).toHaveBeenCalledWith(7, "BullMarket");
   });
 
   it("re-fetches with the new market when the market prop changes", async () => {
@@ -25,10 +26,10 @@ describe("useBarcaTargets", () => {
     const { rerender } = renderHook(({ market }) => useBarcaTargets(market), {
       initialProps: { market: "BullMarket" },
     });
-    await waitFor(() => expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BullMarket"));
+    await waitFor(() => expect(api.fetchBarcaTargets).toHaveBeenCalledWith(7, "BullMarket"));
 
     rerender({ market: "BearMarket" });
-    await waitFor(() => expect(api.fetchBarcaTargets).toHaveBeenCalledWith("BearMarket"));
+    await waitFor(() => expect(api.fetchBarcaTargets).toHaveBeenCalledWith(7, "BearMarket"));
   });
 
   it("surfaces a fetch failure as an error message, not a thrown exception", async () => {
@@ -52,7 +53,7 @@ describe("useBarcaTargets", () => {
       await result.current.save(targets);
     });
 
-    expect(api.saveBarcaTargets).toHaveBeenCalledWith("BullMarket", targets);
+    expect(api.saveBarcaTargets).toHaveBeenCalledWith(7, "BullMarket", targets);
     expect(api.fetchBarcaTargets).toHaveBeenCalledTimes(2);
   });
 });

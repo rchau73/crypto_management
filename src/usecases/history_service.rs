@@ -1,5 +1,6 @@
 //! Reads the recorded price history for the Dashboard charts.
 
+use crate::domain::models::PortfolioId;
 use crate::domain::repository::{RepoResult, SnapshotRepo};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -43,13 +44,18 @@ impl HistoryService {
         Self { snapshots }
     }
 
-    /// Returns `{"level": "...", "rows": [...]}`.
-    pub async fn fetch_history(&self, level: HistoryLevel) -> RepoResult<Value> {
+    /// Returns `{"level": "...", "rows": [...]}` for one portfolio.
+    pub async fn fetch_history(
+        &self,
+        portfolio: PortfolioId,
+        level: HistoryLevel,
+    ) -> RepoResult<Value> {
+        let snapshots = &self.snapshots;
         let rows = match level {
-            HistoryLevel::Totals => json!(self.snapshots.fetch_total_history().await?),
-            HistoryLevel::Assets => json!(self.snapshots.fetch_asset_history().await?),
-            HistoryLevel::Groups => json!(self.snapshots.fetch_group_history().await?),
-            HistoryLevel::Barca => json!(self.snapshots.fetch_barca_history().await?),
+            HistoryLevel::Totals => json!(snapshots.fetch_total_history(portfolio).await?),
+            HistoryLevel::Assets => json!(snapshots.fetch_asset_history(portfolio).await?),
+            HistoryLevel::Groups => json!(snapshots.fetch_group_history(portfolio).await?),
+            HistoryLevel::Barca => json!(snapshots.fetch_barca_history(portfolio).await?),
         };
         Ok(json!({ "level": level.as_str(), "rows": rows }))
     }
@@ -60,6 +66,10 @@ mod tests {
     use super::*;
     use crate::domain::models::{AllocationReport, AllocationSnapshot, AssetAllocation};
     use crate::infra::sqlite::test_repo;
+
+    /// These tests are about one wallet; isolation between portfolios is
+    /// tested in `infra::sqlite::repo` and `tests::integration`.
+    const PORTFOLIO: PortfolioId = PortfolioId::FIRST;
 
     #[test]
     fn level_round_trips_and_rejects_unknown_values() {
@@ -77,30 +87,33 @@ mod tests {
     #[tokio::test]
     async fn asset_rows_keep_the_field_names_the_frontend_expects() {
         let repo = test_repo().await;
-        repo.record_snapshot(&AllocationSnapshot {
-            timestamp: "2026-01-01T00:00:00Z".into(),
-            report: AllocationReport {
-                total_value: 10.0,
-                per_asset: vec![AssetAllocation {
-                    symbol: "BTC".into(),
-                    group: "Core".into(),
-                    barca: "Base".into(),
-                    price: 10.0,
-                    current_quantity: 1.0,
-                    value: 10.0,
-                    target_percent: 60.0,
-                    current_percent: 100.0,
-                    deviation: 40.0,
-                }],
-                ..Default::default()
+        repo.record_snapshot(
+            PORTFOLIO,
+            &AllocationSnapshot {
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                report: AllocationReport {
+                    total_value: 10.0,
+                    per_asset: vec![AssetAllocation {
+                        symbol: "BTC".into(),
+                        group: "Core".into(),
+                        barca: "Base".into(),
+                        price: 10.0,
+                        current_quantity: 1.0,
+                        value: 10.0,
+                        target_percent: 60.0,
+                        current_percent: 100.0,
+                        deviation: 40.0,
+                    }],
+                    ..Default::default()
+                },
+                asset_notes: Default::default(),
             },
-            asset_notes: Default::default(),
-        })
+        )
         .await
         .unwrap();
 
         let history = HistoryService::new(repo)
-            .fetch_history(HistoryLevel::Assets)
+            .fetch_history(PORTFOLIO, HistoryLevel::Assets)
             .await
             .unwrap();
 

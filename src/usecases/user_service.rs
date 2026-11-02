@@ -188,25 +188,27 @@ impl UserService {
     }
 
     /// On first start (no users at all), creates the admin account from the
-    /// given credentials. Returns whether an account was created.
+    /// given credentials. Returns the new admin's id, or `None` if there
+    /// were users already.
     pub async fn ensure_admin_exists(
         &self,
         username: &str,
         password: &str,
         email: &str,
-    ) -> Result<bool, UserServiceError> {
+    ) -> Result<Option<i64>, UserServiceError> {
         if self.repo.count_users().await? > 0 {
-            return Ok(false);
+            return Ok(None);
         }
-        self.create(CreateUser {
-            username,
-            password,
-            role: Role::Admin.as_str(),
-            email,
-            phone: None,
-        })
-        .await?;
-        Ok(true)
+        let admin = self
+            .create(CreateUser {
+                username,
+                password,
+                role: Role::Admin.as_str(),
+                email,
+                phone: None,
+            })
+            .await?;
+        Ok(admin.id)
     }
 }
 
@@ -392,12 +394,14 @@ mod tests {
                 .ensure_admin_exists("root", "pw", "root@example.com")
                 .await
                 .unwrap()
+                .is_some()
         );
-        assert!(
-            !service
+        assert_eq!(
+            service
                 .ensure_admin_exists("root2", "pw", "root2@example.com")
                 .await
-                .unwrap()
+                .unwrap(),
+            None
         );
         let users = service.list().await.unwrap();
         assert_eq!(users.len(), 1);
