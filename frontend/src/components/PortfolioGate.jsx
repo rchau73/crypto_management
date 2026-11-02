@@ -1,17 +1,19 @@
 import { Box, Button, CircularProgress, Container } from "@mui/material";
 import { usePortfolios } from "../hooks/usePortfolios";
 import { CurrentPortfolioContext } from "../hooks/useCurrentPortfolio";
+import { PortfolioListContext } from "../hooks/usePortfolioList";
 import { EmptyState } from "./EmptyState";
 
 // Loads the user's portfolios and renders `children(portfolio)` for the
-// selected one, inside CurrentPortfolioContext.
+// selected one, inside CurrentPortfolioContext (and PortfolioListContext,
+// for the switcher and the Accounts tab).
 //
 // The children are keyed by portfolio id: picking another portfolio
 // unmounts every tab and starts it fresh, so nothing fetched for the
 // previous portfolio (rows, filters, unsaved edits) can be shown or saved
 // under the new one.
 export function PortfolioGate({ onLogout, children }) {
-  const { portfolios, loading, error } = usePortfolios();
+  const { portfolios, current, select, reload, loading, error } = usePortfolios();
 
   if (loading) {
     return (
@@ -20,7 +22,7 @@ export function PortfolioGate({ onLogout, children }) {
       </Box>
     );
   }
-  if (error || portfolios.length === 0) {
+  if (!current) {
     return (
       <Container maxWidth="sm" sx={{ py: 6 }}>
         <EmptyState
@@ -36,10 +38,11 @@ export function PortfolioGate({ onLogout, children }) {
     );
   }
 
-  const portfolio = portfolios[0];
   return (
-    <CurrentPortfolioContext value={portfolio}>
-      <Box key={portfolio.id}>{children(portfolio)}</Box>
-    </CurrentPortfolioContext>
+    <PortfolioListContext value={{ portfolios, select, reload }}>
+      <CurrentPortfolioContext value={current}>
+        <Box key={current.id}>{children(current)}</Box>
+      </CurrentPortfolioContext>
+    </PortfolioListContext>
   );
 }

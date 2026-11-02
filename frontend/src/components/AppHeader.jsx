@@ -1,5 +1,6 @@
 import { AppBar, Button, Stack, Toolbar, Typography } from "@mui/material";
 import { ActionsBar } from "./ActionsBar";
+import { PortfolioSwitcher } from "./PortfolioSwitcher";
 
 // Sticky top bar: title + the two primary actions stay reachable while
 // scrolling a long table, instead of scrolling away with the rest of the page.
@@ -28,9 +29,12 @@ export function AppHeader({
       }}
     >
       <Toolbar sx={{ flexWrap: "wrap", gap: 2, py: 1.5 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700, mr: "auto" }}>
-          Wallet Allocations
-        </Typography>
+        <Stack direction="row" spacing={2} alignItems="center" sx={{ mr: "auto" }}>
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+            Wallet Allocations
+          </Typography>
+          <PortfolioSwitcher />
+        </Stack>
         <ActionsBar
           loading={loading}
           onRefresh={onRefresh}
