@@ -2,6 +2,7 @@
 // renders. Kept free of React so the bucketing logic (the trickiest part of
 // the dashboard) can be unit-tested without mounting anything.
 import dayjs from "dayjs";
+import { toBrt } from "./time";
 
 function toNumber(raw) {
   const value = typeof raw === "number" ? raw : Number(raw || 0);
@@ -26,11 +27,6 @@ export function parseHistoryRows(level, rows) {
   return rows
     .map((r) => ({ ts: String(r.timestamp || ""), value: toNumber(r.total_value) }))
     .filter((x) => x.ts);
-}
-
-// This app always displays timestamps in BRT (UTC-3).
-export function toBrt(ts) {
-  return dayjs(String(ts)).subtract(3, "hour");
 }
 
 // Bucket key for a BRT-shifted timestamp, one string per granularity so rows

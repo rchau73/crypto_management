@@ -208,7 +208,7 @@ greed lasts. The refilled Caixa is the dry powder for the next fear phase.
 | BARCA targets per market profile | **BARCA Targets** tab (Manager), `CURRENT_MARKET` in `.env` |
 | Asset targets inside each BARCA | **Portfolio Targets** tab (Manager) |
 | Current % vs. target per BARCA | **BARCA Actual** tab (tables and pie charts) |
-| Deviation per asset, with color | **Per-Asset** tabs: amber = off by ≥20% of its own target, red = off by more than 1 percentage point |
+| Deviation per asset and group, with color | **Per-Asset** and **Per-Group** tabs: red (with a dot) = outside its ±20% band (rule 1), or holding value with no target |
 | Suggested DCA step | **DCA** column in the Per-Asset tabs (30% of the $ gap) |
 | Drift over time | **Dashboard** tab (history per BARCA, group, asset or total) |
 | A new round | **Update Prices** (every click also records a history snapshot) |

@@ -1,7 +1,8 @@
 // Shared MUI `sx` objects for the allocation tables, so column styling is
 // defined once instead of being retyped identically in every table.
 
-export const compactCellSx = { fontSize: 10, padding: "8px 4px" };
+// 13px: the smallest size that stays readable in a dense table (it was 10px).
+export const compactCellSx = { fontSize: 13, padding: "8px 6px" };
 
 // Numeric columns get tabular figures so digits line up vertically down the column.
 export const numericCellSx = { ...compactCellSx, fontVariantNumeric: "tabular-nums" };
@@ -24,7 +25,7 @@ export function headerCellSx(width) {
   return {
     cursor: "pointer",
     fontWeight: "bold",
-    fontSize: 12,
+    fontSize: 13,
     width: width || "auto",
     padding: "8px 4px",
     whiteSpace: "nowrap",
@@ -38,7 +39,7 @@ export function sortButtonSx(isActive) {
     color: isActive ? "primary.main" : "inherit",
     minWidth: 0,
     fontWeight: "bold",
-    fontSize: 12,
+    fontSize: 13,
     textTransform: "none",
     p: 0,
   };

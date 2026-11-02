@@ -41,17 +41,28 @@ export function deriveRowMetrics(row, totalValue) {
   const targetValue = totalValue * (targetPercent / 100);
   const valueDeviation = row.value - targetValue;
   const dca = Math.abs(valueDeviation) * 0.3;
-  const relativeDeviation = targetPercent > 0 ? Math.abs(deviation) / targetPercent : 0;
-  return { currentPercent, deviation, valueDeviation, dca, relativeDeviation };
+  return { currentPercent, deviation, valueDeviation, dca };
 }
 
-// How far off-target a row is, in buckets a table can color: a >1 point
-// absolute miss is "high" regardless of target size; a smaller absolute miss
-// that's still >=20% of a (small) target is "medium"; otherwise "normal".
-export function deviationSeverity({ deviation, relativeDeviation }) {
-  if (Math.abs(deviation) > 1) return "high";
-  if (relativeDeviation >= 0.2) return "medium";
-  return "normal";
+// BARCA rule 1 (BARCA.md): a row needs action only when its current share is
+// more than 20% *of its own target* away from that target. Relative on
+// purpose: 2 points off is noise for a 50% target but a 20% miss for 10%.
+export const BAND_FRACTION = 0.2;
+
+// "high" = outside the band, "normal" = inside it. A row holding value with
+// no target at all (0%) is outside any band.
+export function bandSeverity(currentPercent, targetPercent) {
+  const current = Number(currentPercent) || 0;
+  const target = Number(targetPercent) || 0;
+  if (target <= 0) return current > 0 ? "high" : "normal";
+  return Math.abs(current - target) > target * BAND_FRACTION ? "high" : "normal";
+}
+
+// $ gap between a row and its target when only its deviation (in percentage
+// points of the whole wallet) is known: those points are of the *total*, not
+// of the row's own value. Positive = above target.
+export function valueGapFromDeviation(deviationPoints, totalValue) {
+  return (totalValue * (Number(deviationPoints) || 0)) / 100;
 }
 
 // Collapse per-asset rows (one per symbol+group+barca) into one row per

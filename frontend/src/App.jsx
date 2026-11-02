@@ -70,6 +70,7 @@ function Dashboard({ user, portfolio, onLogout }) {
     importStatus,
     importError,
     lastUpdate,
+    usdBrl,
     refresh,
     importFromCsv,
     exportToCsv,
@@ -137,7 +138,7 @@ function Dashboard({ user, portfolio, onLogout }) {
       <Box sx={{ height: 3 }}>{loading && <LinearProgress />}</Box>
 
       <Container maxWidth="xl" sx={{ py: 3 }}>
-        <StatTiles totalWalletValue={totalWalletValue} />
+        <StatTiles totalWalletValue={totalWalletValue} usdBrl={usdBrl} />
         <StatusLine lastUpdate={lastUpdate} importStatus={importStatus} importError={importError || loadError} />
 
         {hasData && DATA_TAB_KEYS.has(activeKey) && (

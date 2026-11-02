@@ -78,7 +78,6 @@ export function useHistoryDashboard() {
     data,
     loading,
     error,
-    raw: raw?.response ?? null,
     yAxisDomain,
     refresh,
   };

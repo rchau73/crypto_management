@@ -23,7 +23,7 @@ pub struct MarketQuote {
 /// How many reais one US dollar costs, per the Banco Central's PTAX
 /// (selling rate, "cotação de venda"). Brazilian quotes arrive in BRL and
 /// the portfolio is managed in USD, so they are divided by this.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FxRate {
     pub brl_per_usd: f64,
     /// When the Banco Central published this rate (`YYYY-MM-DD HH:MM:SS`,
@@ -224,6 +224,17 @@ pub struct AllocationReport {
     pub per_group: Vec<GroupAllocation>,
     pub per_barca: Vec<BarcaAllocation>,
     pub per_barca_actual: Vec<BarcaActual>,
+}
+
+/// What "Update Prices" returns: the report plus this round's USD/BRL rate,
+/// so the UI can show the total in reais at the official rate. `None` when
+/// the rate couldn't be fetched (the UI then shows no R$ total rather than
+/// one at a guessed rate).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PricedReport {
+    #[serde(flatten)]
+    pub report: AllocationReport,
+    pub usd_brl: Option<FxRate>,
 }
 
 // ---------------------------------------------------------------------------

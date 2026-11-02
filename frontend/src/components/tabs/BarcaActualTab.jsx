@@ -2,7 +2,7 @@ import { Box, Paper, Table, TableBody, TableCell, TableContainer, TableHead, Tab
 import { AllocationPieChart } from "../AllocationPieChart";
 import { getTotalTargetPercent } from "../../utils/allocationMath";
 import { formatNumber } from "../../utils/formatters";
-import { numericCellSx, zebraRowSx } from "../../styles/tableStyles";
+import { compactCellSx, numericCellSx, zebraRowSx } from "../../styles/tableStyles";
 import { colorForSeries } from "../../theme";
 
 // Tab 3: actual BARCA allocation table, plus target vs. actual pie charts
@@ -37,7 +37,7 @@ export function BarcaActualTab({ barcaAllocations, barcaActualAllocations }) {
           <TableBody>
             {barcaActualAllocations.map((b, idx) => (
               <TableRow key={idx} hover sx={zebraRowSx}>
-                <TableCell sx={{ fontSize: 10 }}>{b.barca}</TableCell>
+                <TableCell sx={compactCellSx}>{b.barca}</TableCell>
                 <TableCell align="right" sx={numericCellSx}>
                   ${formatNumber(b.value)}
                 </TableCell>

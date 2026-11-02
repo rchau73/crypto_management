@@ -1,11 +1,7 @@
 import { Box, Paper, Typography } from "@mui/material";
 import { formatNumber } from "../utils/formatters";
 
-// USDT/BRL is not part of the API response yet; hardcoded here until the
-// backend exposes a real rate.
-const USDT_BRL_RATE = 5.6;
-
-function StatTile({ label, value, accent }) {
+function StatTile({ label, value, accent, caption }) {
   return (
     <Paper
       variant="outlined"
@@ -17,17 +13,36 @@ function StatTile({ label, value, accent }) {
       <Typography variant="h5" sx={{ fontWeight: 700, color: accent, fontVariantNumeric: "tabular-nums" }}>
         {value}
       </Typography>
+      {caption && (
+        <Typography variant="caption" component="div" sx={{ color: "text.secondary" }}>
+          {caption}
+        </Typography>
+      )}
     </Paper>
   );
 }
 
-export function StatTiles({ totalWalletValue }) {
-  const totalWalletValueBrl = totalWalletValue * USDT_BRL_RATE;
+// `usdBrl` is the Banco Central's PTAX rate returned by "Update Prices"
+// ({ brl_per_usd, quoted_at }), or null before the first update or when the
+// rate couldn't be fetched. Without it there is no R$ total: a guessed rate
+// would show a wrong number with no warning.
+export function StatTiles({ totalWalletValue, usdBrl }) {
+  const rate = usdBrl?.brl_per_usd;
+  const hasRate = typeof rate === "number" && rate > 0;
 
   return (
     <Box sx={{ display: "flex", gap: 2, mb: 3, flexWrap: "wrap" }}>
       <StatTile label="Total Wallet Value" value={`$${formatNumber(totalWalletValue)}`} accent="primary.main" />
-      <StatTile label="Total in R$" value={`R$ ${formatNumber(totalWalletValueBrl)}`} accent="secondary.main" />
+      <StatTile
+        label="Total in R$"
+        value={hasRate ? `R$ ${formatNumber(totalWalletValue * rate)}` : "—"}
+        accent="secondary.main"
+        caption={
+          hasRate
+            ? `At R$ ${rate.toFixed(4)} per US$ (PTAX, ${usdBrl.quoted_at})`
+            : "No USD/BRL rate yet — Update Prices to get it"
+        }
+      />
     </Box>
   );
 }
