@@ -1,5 +1,5 @@
 flowchart TD
-    START(["Update Prices"]) --> BANDS{"Is any BARCA outside<br/>its ±20% band?"}
+    START(["Prices refresh"]) --> BANDS{"Is any BARCA outside<br/>its ±20% band?"}
     BANDS -- "No" --> HOLD["Do nothing.<br/>Drift inside the band is noise."]
     BANDS -- "Yes" --> SENT{"Macro context +<br/>Fear & Greed index"}
 

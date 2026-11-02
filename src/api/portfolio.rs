@@ -17,14 +17,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-/// "Update Prices": fetch live prices, recompute and record a snapshot.
+/// The live allocations, at the shared prices (refreshed when they are
+/// older than `PRICE_REFRESH_MINUTES`). The app polls this.
 #[tracing::instrument(skip_all, fields(user_id = scope.user.user_id, portfolio_id = %scope.portfolio))]
 pub async fn allocations(
     scope: PortfolioScope,
     State(state): State<AppState>,
 ) -> ApiResult<Json<PricedReport>> {
     Ok(Json(
-        state.allocations.refresh_prices(scope.portfolio).await?,
+        state.allocations.current_report(scope.portfolio).await?,
     ))
 }
 

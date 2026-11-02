@@ -422,6 +422,12 @@ impl PortfolioDirectoryRepo for SqliteRepo {
             .collect()
     }
 
+    async fn list_all_portfolio_ids(&self) -> RepoResult<Vec<PortfolioId>> {
+        Ok(sqlx::query_scalar("SELECT id FROM portfolios ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
     async fn find_access(
         &self,
         portfolio: PortfolioId,
@@ -1081,6 +1087,17 @@ mod tests {
         repo.create_portfolio("Spouse", owner.id.unwrap(), None)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_all_portfolio_ids_ignores_membership() {
+        let repo = test_repo().await;
+        let other = second_portfolio(&repo).await;
+        // Nobody is a member of portfolio 1 here; it is still listed.
+        assert_eq!(
+            repo.list_all_portfolio_ids().await.unwrap(),
+            [PORTFOLIO, other]
+        );
     }
 
     #[tokio::test]

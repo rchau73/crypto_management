@@ -30,7 +30,7 @@ export function DashboardTab() {
             ) : (
               !dashboard.error && (
                 <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                  No history for this account yet. Every "Update Prices" records a point; the chart appears after the first one.
+                  No history for this account yet. A point is recorded each time prices refresh while the app is open; the chart appears after the first one.
                 </Typography>
               )
             )}

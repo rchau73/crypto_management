@@ -948,12 +948,19 @@ async fn two_portfolios_never_share_positions_targets_history_or_exports() {
         ),
     )
     .await;
+    // One shared price refresh records a snapshot in each portfolio, each
+    // with only its own total.
+    let (_, my_report) = send(&app, get("/api/portfolios/1/allocations", &manager)).await;
+    let their_rows = their_history["rows"].as_array().unwrap();
+    let my_rows = my_history["rows"].as_array().unwrap();
+    assert_eq!(their_rows.len(), 1);
+    assert_eq!(their_rows[0]["total_value"], 35.0);
+    assert_eq!(my_rows.len(), 1);
     assert_eq!(
-        my_history["rows"],
-        json!([]),
-        "their refresh isn't in my history"
+        my_rows[0]["total_value"], my_report["total_value"],
+        "my history has my total, not theirs"
     );
-    assert_eq!(their_history["rows"].as_array().unwrap().len(), 1);
+    assert_ne!(my_rows[0]["total_value"], 35.0);
 
     // Saving their targets leaves mine alone.
     let (status, _) = send(

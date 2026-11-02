@@ -1,38 +1,36 @@
 sequenceDiagram
     autonumber
-    actor Client
+    actor Client as "Frontend<br/>(polls every 10 s)"
     participant Handler as "api::portfolio::allocations"
     participant Alloc as "AllocationsService"
-    participant Portfolio as "PortfolioRepo<br/>(SqliteRepo)"
-    participant Providers as "CryptoProvider / EquityProvider<br/>(CoinMarketCap, brapi, Finnhub)"
-    participant Barca as "BarcaTargetRepo<br/>(SqliteRepo)"
+    participant Portfolio as "PortfolioRepo /<br/>PortfolioDirectoryRepo"
+    participant Providers as "Crypto / Equity / Fx providers<br/>(CoinMarketCap, brapi, Finnhub, BCB)"
     participant Compute as "compute_allocations<br/>(pure function)"
-    participant Snap as "SnapshotRepo<br/>(SqliteRepo)"
+    participant Snap as "SnapshotRepo"
 
-    Note over Client,Handler: CurrentUser extractor verifies the access_token<br/>cookie first — see docs/sequence-login.mmd.
+    Note over Client,Handler: PortfolioScope checks the session cookie and<br/>membership of {id} first — see docs/sequence-login.mmd.
 
-    Client->>Handler: GET /api/allocations
-    Handler->>Alloc: refresh_prices()
-
-    Alloc->>Portfolio: fetch_positions()
+    Client->>Handler: GET /api/portfolios/{id}/allocations
+    Handler->>Alloc: current_report(id)
+    Alloc->>Portfolio: fetch_positions(id)
     Portfolio-->>Alloc: Vec<WalletPosition>
 
-    Alloc->>Providers: crypto.fetch_latest()
-    Providers-->>Alloc: Vec<MarketQuote> (failure → 502)
-    Alloc->>Providers: br/us fetch_quotes(symbols)
-    Providers-->>Alloc: Vec<MarketQuote> (failure → logged, assets skipped)
+    alt shared prices fresh (< PRICE_REFRESH_MINUTES) and cover every holding
+        Note over Alloc: No API call — just the database
+    else stale, missing a symbol, or none yet (one request at a time)
+        Alloc->>Portfolio: list_all_portfolio_ids() + fetch_positions(each)
+        Alloc->>Providers: crypto.fetch_quotes(held symbols) — 1 credit / 100
+        Alloc->>Providers: PTAX, br/us fetch_quotes(symbols)
+        Providers-->>Alloc: quotes (crypto failure → previous prices, or 502)
+        loop every portfolio holding something
+            Alloc->>Compute: compute_allocations(positions, quotes, targets)
+            Alloc->>Snap: record_snapshot(report)
+        end
+    end
 
-    Alloc->>Barca: fetch_barca_targets(current_market)
-    Barca-->>Alloc: Vec<BarcaTarget>
-
-    Alloc->>Compute: compute_allocations(positions, quotes, targets)
-    Compute-->>Alloc: AllocationReport (typed, sorted)
-
-    Alloc->>Snap: record_snapshot(report)
-    Note over Snap: ONE transaction: allocations payload +<br/>history_assets/groups/barca/totals
-    Snap-->>Alloc: ok
-
-    Alloc-->>Handler: AllocationReport
+    Alloc->>Compute: compute_allocations(positions, shared quotes, BARCA targets)
+    Compute-->>Alloc: AllocationReport
+    Alloc-->>Handler: PricedReport (report + usd_brl + prices_as_of)
     Handler-->>Client: 200 OK (JSON)
 
     Note over Client,Snap: Every log line carries the request span<br/>(method, uri) from tower-http's TraceLayer.

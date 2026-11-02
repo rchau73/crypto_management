@@ -22,9 +22,9 @@ function StatTile({ label, value, accent, caption }) {
   );
 }
 
-// `usdBrl` is the Banco Central's PTAX rate returned by "Update Prices"
-// ({ brl_per_usd, quoted_at }), or null before the first update or when the
-// rate couldn't be fetched. Without it there is no R$ total: a guessed rate
+// `usdBrl` is the Banco Central's PTAX rate of the current prices
+// ({ brl_per_usd, quoted_at }), or null before they load or when the rate
+// couldn't be fetched. Without it there is no R$ total: a guessed rate
 // would show a wrong number with no warning.
 export function StatTiles({ totalWalletValue, usdBrl }) {
   const rate = usdBrl?.brl_per_usd;
@@ -40,7 +40,7 @@ export function StatTiles({ totalWalletValue, usdBrl }) {
         caption={
           hasRate
             ? `At R$ ${rate.toFixed(4)} per US$ (PTAX, ${usdBrl.quoted_at})`
-            : "No USD/BRL rate yet — Update Prices to get it"
+            : "USD/BRL rate unavailable right now"
         }
       />
     </Box>

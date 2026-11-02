@@ -162,7 +162,7 @@ of the current $ gap** to target (the **DCA** column):
 | 6 | 30% of what is left | 12% |
 
 Each step is smaller than the one before. If the market keeps moving in the
-same direction, the next round (after the next **Update Prices**) sees a
+same direction, the next round (after the next price refresh) sees a
 bigger gap again, and the model automatically buys or sells a bit more.
 
 ---
@@ -211,7 +211,7 @@ greed lasts. The refilled Caixa is the dry powder for the next fear phase.
 | Deviation per asset and group, with color | **Per-Asset** and **Per-Group** tabs: red (with a dot) = outside its ±20% band (rule 1), or holding value with no target |
 | Suggested DCA step | **DCA** column in the Per-Asset tabs (30% of the $ gap) |
 | Drift over time | **Dashboard** tab (history per BARCA, group, asset or total) |
-| A new round | **Update Prices** (every click also records a history snapshot) |
+| A new round | Prices refresh by themselves every few minutes while the app is open (`PRICE_REFRESH_MINUTES`); each refresh records a history snapshot |
 
 **What stays human, on purpose:** the app does not read the Fear & Greed
 index or the macro data, and it never trades. It shows *where* the wallet is

@@ -226,15 +226,19 @@ pub struct AllocationReport {
     pub per_barca_actual: Vec<BarcaActual>,
 }
 
-/// What "Update Prices" returns: the report plus this round's USD/BRL rate,
-/// so the UI can show the total in reais at the official rate. `None` when
-/// the rate couldn't be fetched (the UI then shows no R$ total rather than
-/// one at a guessed rate).
+/// A portfolio's live allocations and the prices they were computed with.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PricedReport {
     #[serde(flatten)]
     pub report: AllocationReport,
+    /// The USD/BRL rate of the price round, so the UI can show the total
+    /// in reais at the official rate. `None` when the rate couldn't be
+    /// fetched (the UI then shows no R$ total rather than a guessed one).
     pub usd_brl: Option<FxRate>,
+    /// When the prices were fetched (RFC 3339, UTC).
+    pub prices_as_of: String,
+    /// How often prices are refreshed, so the UI can tell when they're old.
+    pub refresh_interval_secs: u64,
 }
 
 // ---------------------------------------------------------------------------
