@@ -14,6 +14,6 @@ describe("StatTiles", () => {
     render(<StatTiles totalWalletValue={1000} usdBrl={null} />);
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByText(/R\$ 5,600/)).not.toBeInTheDocument();
-    expect(screen.getByText(/No USD\/BRL rate yet/)).toBeInTheDocument();
+    expect(screen.getByText("USD/BRL rate unavailable right now")).toBeInTheDocument();
   });
 });

@@ -1,11 +1,13 @@
-//! Adapter for CoinMarketCap's "listings/latest" endpoint. Only the fields
-//! we use are declared, so an unrelated field changing shape (or being
-//! null for some coin) can't break the whole price refresh.
+//! Adapter for CoinMarketCap's v2 "quotes/latest" endpoint: prices for the
+//! symbols we hold only, at 1 credit per 100 symbols (the old top-1000
+//! "listings/latest" call cost 5 credits whatever we held). Only the fields
+//! we use are declared, so an unrelated field changing shape (or being null
+//! for some coin) can't break the whole price refresh.
 //!
-//! Tickers are not unique on CoinMarketCap: in October 2026 a memecoin
-//! also called "BTC" entered the top 1000 and Bitcoin got priced at $0.03.
-//! The listing is sorted by market cap, so for a repeated ticker we keep
-//! the first (largest) coin and drop the rest.
+//! Tickers are not unique on CoinMarketCap: v2 answers every symbol with a
+//! list of all the coins using it (14 "BTC"s in November 2026, one of which
+//! once got Bitcoin priced at $0.03). We keep the active, priced coin with
+//! the best market-cap rank.
 
 use crate::domain::market_data::{CryptoProvider, MarketDataResult};
 use crate::domain::models::MarketQuote;
@@ -13,28 +15,35 @@ use crate::infra::http::{build_client, read_json};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-const LISTINGS_URL: &str = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest";
-const LISTING_LIMIT: &str = "1000";
+const QUOTES_URL: &str = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest";
+/// One credit buys up to 100 symbols, so ask in batches of that size.
+const SYMBOLS_PER_CALL: usize = 100;
 
 #[derive(Deserialize)]
-struct ListingsResponse {
-    data: Vec<Listing>,
+struct QuotesResponse {
+    /// Symbol as asked -> every coin using that ticker.
+    data: HashMap<String, Vec<Coin>>,
 }
 
 #[derive(Deserialize)]
-struct Listing {
-    symbol: String,
+struct Coin {
     #[serde(default)]
     name: Option<String>,
-    quote: Quote,
+    /// Market-cap rank (1 = largest); null for coins too small to rank.
+    #[serde(default)]
+    cmc_rank: Option<u32>,
+    #[serde(default)]
+    is_active: Option<u8>,
+    #[serde(default)]
+    quote: Option<Quote>,
 }
 
 #[derive(Deserialize)]
 struct Quote {
     #[serde(rename = "USD")]
-    usd: UsdQuote,
+    usd: Option<UsdQuote>,
 }
 
 #[derive(Deserialize)]
@@ -42,28 +51,42 @@ struct UsdQuote {
     price: Option<f64>,
 }
 
-fn to_market_quotes(response: ListingsResponse) -> Vec<MarketQuote> {
-    let mut seen = HashSet::new();
-    let mut quotes = Vec::new();
-    for listing in response.data {
-        // A listed coin with no price can't be valued — leave it out.
-        let Some(price) = listing.quote.usd.price else {
-            continue;
-        };
-        if !seen.insert(listing.symbol.clone()) {
-            tracing::warn!(
-                symbol = %listing.symbol,
-                name = listing.name.as_deref().unwrap_or(""),
-                price,
-                "CoinMarketCap lists this ticker twice — keeping the larger coin"
-            );
-            continue;
-        }
-        quotes.push(MarketQuote {
-            symbol: listing.symbol,
-            price,
-        });
+impl Coin {
+    fn price(&self) -> Option<f64> {
+        self.quote.as_ref()?.usd.as_ref()?.price
     }
+}
+
+/// One quote per symbol: the active, priced coin with the best rank. A
+/// symbol no coin can price is left out (it shows as unpriced in the app,
+/// rather than at $0).
+fn to_market_quotes(response: QuotesResponse) -> Vec<MarketQuote> {
+    let mut quotes: Vec<MarketQuote> = response
+        .data
+        .into_iter()
+        .filter_map(|(symbol, coins)| {
+            let candidates = coins.len();
+            let best = coins
+                .into_iter()
+                .filter(|c| c.is_active != Some(0))
+                .filter_map(|c| c.price().map(|price| (c, price)))
+                .min_by_key(|(c, _)| c.cmc_rank.unwrap_or(u32::MAX))?;
+            if candidates > 1 {
+                tracing::debug!(
+                    %symbol,
+                    candidates,
+                    chosen = best.0.name.as_deref().unwrap_or(""),
+                    rank = ?best.0.cmc_rank,
+                    "Ticker shared by several coins — kept the best-ranked one"
+                );
+            }
+            Some(MarketQuote {
+                symbol,
+                price: best.1,
+            })
+        })
+        .collect();
+    quotes.sort_by(|a, b| a.symbol.cmp(&b.symbol));
     quotes
 }
 
@@ -79,21 +102,60 @@ impl CoinMarketCapProvider {
             api_key,
         }
     }
+
+    async fn fetch_batch(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        let response = self
+            .client
+            .get(QUOTES_URL)
+            .header("X-CMC_PRO_API_KEY", &self.api_key)
+            .header("Accept", "application/json")
+            // skip_invalid: an unknown symbol is dropped instead of failing
+            // the whole call.
+            .query(&[
+                ("symbol", symbols.join(",").as_str()),
+                ("skip_invalid", "true"),
+            ])
+            .send()
+            .await?;
+        let parsed: QuotesResponse = read_json(response, "CoinMarketCap").await?;
+        Ok(to_market_quotes(parsed))
+    }
+}
+
+/// CoinMarketCap rejects the whole call (400) if any symbol has anything
+/// but letters and digits, so such a symbol (e.g. "#RAY") is left out and
+/// stays unpriced, as it was with the old listing call.
+fn askable(symbols: &[String]) -> (Vec<String>, Vec<&str>) {
+    let (ok, bad): (Vec<&String>, Vec<&String>) = symbols
+        .iter()
+        .partition(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()));
+    (
+        ok.into_iter().cloned().collect(),
+        bad.into_iter().map(String::as_str).collect(),
+    )
 }
 
 #[async_trait]
 impl CryptoProvider for CoinMarketCapProvider {
-    async fn fetch_latest(&self) -> MarketDataResult<Vec<MarketQuote>> {
-        let response = self
-            .client
-            .get(LISTINGS_URL)
-            .header("X-CMC_PRO_API_KEY", &self.api_key)
-            .header("Accept", "application/json")
-            .query(&[("limit", LISTING_LIMIT)])
-            .send()
-            .await?;
-        let parsed: ListingsResponse = read_json(response, "CoinMarketCap").await?;
-        Ok(to_market_quotes(parsed))
+    async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        let (symbols, skipped) = askable(symbols);
+        if !skipped.is_empty() {
+            tracing::warn!(
+                ?skipped,
+                "Not asking CoinMarketCap for symbols that aren't letters and digits — they stay unpriced"
+            );
+        }
+        let mut quotes = Vec::new();
+        for batch in symbols.chunks(SYMBOLS_PER_CALL) {
+            quotes.extend(self.fetch_batch(batch).await?);
+        }
+        tracing::info!(
+            symbols = symbols.len(),
+            priced = quotes.len(),
+            calls = symbols.len().div_ceil(SYMBOLS_PER_CALL),
+            "Fetched CoinMarketCap quotes"
+        );
+        Ok(quotes)
     }
 }
 
@@ -101,75 +163,71 @@ impl CryptoProvider for CoinMarketCapProvider {
 mod tests {
     use super::*;
 
+    fn quotes(raw: &str) -> Vec<MarketQuote> {
+        to_market_quotes(serde_json::from_str(raw).unwrap())
+    }
+
+    fn quote(symbol: &str, price: f64) -> MarketQuote {
+        MarketQuote {
+            symbol: symbol.into(),
+            price,
+        }
+    }
+
     #[test]
-    fn maps_listings_and_ignores_fields_we_do_not_use() {
+    fn symbols_that_would_make_coinmarketcap_reject_the_call_are_left_out() {
+        // Regression: a "#RAY" position made every refresh fail with 400.
+        let symbols = ["BTC", "#RAY", "ETH", "", "A B", "1INCH"].map(String::from);
+        let (ok, skipped) = askable(&symbols);
+        assert_eq!(ok, ["BTC", "ETH", "1INCH"]);
+        assert_eq!(skipped, ["#RAY", "", "A B"]);
+    }
+
+    #[test]
+    fn maps_quotes_and_ignores_fields_we_do_not_use() {
         let raw = r#"{
-            "status": {"error_code": 0},
-            "data": [
-                {"symbol": "BTC", "name": "Bitcoin", "quote": {"USD": {"price": 65000.5, "fully_diluted_market_cap": null}}},
-                {"symbol": "ETH", "quote": {"USD": {"price": 3000.0}}}
-            ]
+            "status": {"error_code": 0, "credit_count": 1},
+            "data": {
+                "BTC": [{"id": 1, "name": "Bitcoin", "cmc_rank": 1, "is_active": 1,
+                         "quote": {"USD": {"price": 65000.5, "fully_diluted_market_cap": null}}}],
+                "ETH": [{"name": "Ethereum", "cmc_rank": 2, "quote": {"USD": {"price": 3000.0}}}]
+            }
         }"#;
-        let quotes = to_market_quotes(serde_json::from_str(raw).unwrap());
         assert_eq!(
-            quotes,
-            vec![
-                MarketQuote {
-                    symbol: "BTC".into(),
-                    price: 65000.5
-                },
-                MarketQuote {
-                    symbol: "ETH".into(),
-                    price: 3000.0
-                },
-            ]
+            quotes(raw),
+            vec![quote("BTC", 65000.5), quote("ETH", 3000.0)]
         );
     }
 
     #[test]
-    fn a_repeated_ticker_keeps_the_first_larger_coin() {
-        // Regression: "Big Titty Coin" (rank 569, $0.03) also uses BTC and
-        // overwrote Bitcoin's price.
-        let raw = r#"{"data": [
-            {"symbol": "BTC", "name": "Bitcoin", "quote": {"USD": {"price": 79000.0}}},
-            {"symbol": "ETH", "quote": {"USD": {"price": 3000.0}}},
-            {"symbol": "BTC", "name": "Big Titty Coin", "quote": {"USD": {"price": 0.03}}}
-        ]}"#;
-        let quotes = to_market_quotes(serde_json::from_str(raw).unwrap());
-        assert_eq!(
-            quotes,
-            vec![
-                MarketQuote {
-                    symbol: "BTC".into(),
-                    price: 79000.0
-                },
-                MarketQuote {
-                    symbol: "ETH".into(),
-                    price: 3000.0
-                },
-            ]
-        );
+    fn a_shared_ticker_keeps_the_best_ranked_coin_whatever_the_order() {
+        // Regression: "Big Titty Coin" also uses BTC and once priced
+        // Bitcoin at $0.03.
+        let raw = r#"{"data": {"BTC": [
+            {"name": "Big Titty Coin", "cmc_rank": 3840, "is_active": 1, "quote": {"USD": {"price": 0.03}}},
+            {"name": "Bitcoin", "cmc_rank": 1, "is_active": 1, "quote": {"USD": {"price": 79000.0}}},
+            {"name": "Unranked", "cmc_rank": null, "is_active": 1, "quote": {"USD": {"price": 5.0}}}
+        ]}}"#;
+        assert_eq!(quotes(raw), vec![quote("BTC", 79000.0)]);
     }
 
     #[test]
-    fn a_priceless_first_listing_does_not_hide_a_priced_one() {
-        let raw = r#"{"data": [
-            {"symbol": "X", "quote": {"USD": {"price": null}}},
-            {"symbol": "X", "quote": {"USD": {"price": 2.0}}}
-        ]}"#;
-        let quotes = to_market_quotes(serde_json::from_str(raw).unwrap());
-        assert_eq!(
-            quotes,
-            vec![MarketQuote {
-                symbol: "X".into(),
-                price: 2.0
-            }]
-        );
+    fn inactive_and_priceless_coins_are_never_chosen() {
+        let raw = r#"{"data": {"ETH": [
+            {"name": "Dead", "cmc_rank": 1, "is_active": 0, "quote": {"USD": {"price": 1.0}}},
+            {"name": "No price", "cmc_rank": 2, "is_active": 1, "quote": {"USD": {"price": null}}},
+            {"name": "No quote", "cmc_rank": 3, "is_active": 1, "quote": {}},
+            {"name": "Ethereum", "cmc_rank": 4, "is_active": 1, "quote": {"USD": {"price": 3000.0}}}
+        ]}}"#;
+        assert_eq!(quotes(raw), vec![quote("ETH", 3000.0)]);
     }
 
     #[test]
-    fn a_listing_with_a_null_price_is_skipped_not_priced_at_zero() {
-        let raw = r#"{"data": [{"symbol": "NEW", "quote": {"USD": {"price": null}}}]}"#;
-        assert!(to_market_quotes(serde_json::from_str(raw).unwrap()).is_empty());
+    fn an_unknown_or_unpriced_symbol_is_left_out_not_priced_at_zero() {
+        let raw = r#"{"data": {
+            "NOTACOIN": [],
+            "NEW": [{"cmc_rank": null, "is_active": 0, "quote": {"USD": {"price": null}}}]
+        }}"#;
+        assert!(quotes(raw).is_empty());
     }
 }

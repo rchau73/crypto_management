@@ -6,11 +6,12 @@ use async_trait::async_trait;
 
 pub type MarketDataResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-/// Prices for the whole crypto market (CoinMarketCap's "listings/latest"
-/// returns the top N coins, so no symbol list is needed).
+/// Crypto prices for an explicit list of symbols (CoinMarketCap). Only the
+/// held symbols are asked for, since the API bills per symbol batch. A
+/// symbol it can't price is left out of the result.
 #[async_trait]
 pub trait CryptoProvider: Send + Sync {
-    async fn fetch_latest(&self) -> MarketDataResult<Vec<MarketQuote>>;
+    async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>>;
 }
 
 /// Prices for an explicit list of symbols (brapi for Brazilian equities,
@@ -28,12 +29,14 @@ pub trait FxProvider: Send + Sync {
     async fn fetch_usd_brl(&self) -> MarketDataResult<FxRate>;
 }
 
-/// Test double for both provider traits: always returns the same quotes,
-/// or always fails when built with `failing()`.
+/// Test double for both provider traits: always returns the same quotes
+/// (only those asked for), or always fails when built with `failing()`.
+/// `calls()` counts the requests, to test that prices are cached.
 #[cfg(test)]
 pub struct FakeProvider {
     quotes: Vec<MarketQuote>,
     fail: bool,
+    calls: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(test)]
@@ -49,6 +52,7 @@ impl FakeProvider {
         Self {
             quotes,
             fail: false,
+            calls: Default::default(),
         }
     }
 
@@ -60,30 +64,41 @@ impl FakeProvider {
         Self {
             quotes: vec![],
             fail: true,
+            calls: Default::default(),
         }
     }
 
-    fn result(&self) -> MarketDataResult<Vec<MarketQuote>> {
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn result(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail {
             return Err("provider is down".into());
         }
-        Ok(self.quotes.clone())
+        Ok(self
+            .quotes
+            .iter()
+            .filter(|q| symbols.contains(&q.symbol))
+            .cloned()
+            .collect())
     }
 }
 
 #[cfg(test)]
 #[async_trait]
 impl CryptoProvider for FakeProvider {
-    async fn fetch_latest(&self) -> MarketDataResult<Vec<MarketQuote>> {
-        self.result()
+    async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        self.result(symbols)
     }
 }
 
 #[cfg(test)]
 #[async_trait]
 impl EquityProvider for FakeProvider {
-    async fn fetch_quotes(&self, _symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
-        self.result()
+    async fn fetch_quotes(&self, symbols: &[String]) -> MarketDataResult<Vec<MarketQuote>> {
+        self.result(symbols)
     }
 }
 

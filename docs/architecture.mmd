@@ -13,7 +13,7 @@ flowchart TD
 
     subgraph USECASES["src/usecases/ — business rules"]
         CA["compute_allocations\n(pure function, no I/O)"]
-        AS["AllocationsService\n(Update Prices)"]
+        AS["AllocationsService\n(shared, cached prices)"]
         HS["HistoryService"]
         TS["TargetsService"]
         WI["WalletImportService\n(CSV import)"]

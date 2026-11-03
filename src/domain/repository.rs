@@ -132,6 +132,10 @@ pub trait PortfolioDirectoryRepo: Send + Sync {
     /// Every portfolio `user_id` is a member of, by name.
     async fn list_portfolios_for_user(&self, user_id: i64) -> RepoResult<Vec<PortfolioSummary>>;
 
+    /// Every portfolio's id, whoever is a member — for system work such as
+    /// the shared price refresh, never to answer a user's request.
+    async fn list_all_portfolio_ids(&self) -> RepoResult<Vec<PortfolioId>>;
+
     /// `user_id`'s access to `portfolio`, or `None` if not a member (or no
     /// such portfolio — callers must not be able to tell the two apart).
     async fn find_access(

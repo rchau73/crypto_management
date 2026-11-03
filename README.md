@@ -58,7 +58,7 @@ Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 | Domain | `src/domain/models.rs` | Plain structs shared across layers (`LedgerEntry` = a row written to the ledger, `WalletPosition` = a row of the current-positions view, `AllocationReport`, `User`, `Role`). No business logic, no I/O. |
 | Domain (ports) | `src/domain/repository.rs`, `src/domain/market_data.rs` | Small traits the use cases depend on: `PortfolioRepo`, `BarcaTargetRepo`, `SnapshotRepo`, `UserRepo`, `RefreshTokenRepo`, `CryptoProvider`, `EquityProvider`. |
 | Use cases | `src/usecases/compute_allocations.rs` | Pure function: positions + prices + BARCA targets in, typed `AllocationReport` out. No I/O — the easiest thing in the codebase to unit test. |
-| Use cases | `src/usecases/*_service.rs`, `wallet_import.rs`, `validation.rs` | One service per feature: `AllocationsService` (Update Prices), `HistoryService`, `TargetsService`, `WalletImportService` (CSV), `AuthService`, `UserService`. All input validation happens here, before anything is written. |
+| Use cases | `src/usecases/*_service.rs`, `wallet_import.rs`, `validation.rs` | One service per feature: `AllocationsService` (live allocations at shared, cached prices), `HistoryService`, `TargetsService`, `WalletImportService` (CSV), `AuthService`, `UserService`. All input validation happens here, before anything is written. |
 | Infra (adapters) | `src/infra/sqlite/` | `SqliteRepo` implements every repo trait; `connect()` opens the pool (WAL, busy timeout) and runs migrations. Multi-table writes are single transactions. |
 | Infra (adapters) | `src/infra/coinmarketcap.rs`, `brapi.rs`, `finnhub.rs`, `http.rs` | Price providers. Each owns its API key and wire format; `http.rs` adds timeouts and checks the HTTP status before parsing. |
 | HTTP layer | `src/api/` | `build_router()` (used by `main` **and** the integration tests), `AppState` (services built once), thin handlers, and `ApiError`, which maps service errors to status codes and logs internal details instead of returning them. |
@@ -106,7 +106,7 @@ Source: [`docs/data-model.mmd`](docs/data-model.mmd)
 - **`wallet_allocations`** — append-only ledger fed by `import_wallet_allocations` from `wallet_allocations.csv`; every edit is a new row, never an update.
 - **`wallet_allocations_current`** (view) — aggregates the latest row per `(symbol, group_name, barca)`, summing `current_quantity` across ledger entries (e.g. the same coin held on two exchanges).
 - **`CRYPTO`** — live market data from CoinMarketCap; never persisted directly, only joined by `symbol` against `wallet_allocations_current` at request time inside `compute_allocations`.
-- **`history_assets` / `history_groups` / `history_barca` / `history_totals`** — one snapshot batch per `timestamp`, written together by `HistoryService::persist_snapshots` every time `/api/allocations` runs.
+- **`history_assets` / `history_groups` / `history_barca` / `history_totals`** — one snapshot batch per `timestamp`, written together by `SnapshotRepo::record_snapshot` every time the shared prices refresh (one batch per portfolio that holds anything).
 - **`asset_variance_history` / `group_variance_history` / `barca_variance_history`** (views) — add `deviation_percent` (and, for assets, `value_deviation`) on top of the raw snapshots; these are what `/api/history` actually serves.
 - **`allocations`** — audit trail of the full computed JSON payload per run, independent of the per-row snapshots.
 - **`users`** — one row per account (`username`, an argon2id `password_hash`, and a `role` of `admin`/`manager`/`user`). No public sign-up endpoint exists anywhere — every row is created by an Admin via the Admin tab, except the one bootstrap Admin seeded from env vars on first boot.
@@ -179,7 +179,7 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
    HGRU11,FII,Renda Variavel,5,10,br-equities
    ```
 
-   `asset_class` is optional and defaults to `crypto` if the column is omitted; it's one of `crypto` / `br-equities` / `us-indices` and controls which price provider is used for that symbol when you click **Update Prices**.
+   `asset_class` is optional and defaults to `crypto` if the column is omitted; it's one of `crypto` / `br-equities` / `us-indices` and controls which price provider is used for that symbol.
 
 4. **Build and run the backend server:**
 
@@ -246,9 +246,9 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
 
 With both the backend and frontend running and you logged in:
 
-- Click **Update Prices** in the header to fetch live prices (CoinMarketCap always; brapi/Finnhub too, for any `br-equities`/`us-indices` assets you're tracking) and recompute your allocation. This is the only thing that triggers a price fetch — no polling, no background jobs.
+- Prices load as soon as you open an account and stay current by themselves; the header shows their age ("Prices from 4 min ago", amber when older than two refresh intervals). The app asks the backend every 10 seconds, but that only reads the database: the backend calls the price APIs (CoinMarketCap for the crypto you hold, brapi/Finnhub for `br-equities`/`us-indices`, the Banco Central for USD/BRL) only when its shared prices are older than `PRICE_REFRESH_MINUTES` (default 5), or when an account holds a symbol they don't cover yet. Nothing runs while the app is closed. CoinMarketCap's free plan has 10,000 credits a month and a refresh costs 1 credit per 100 symbols, so the default stays within it even with the app open all day. If a refresh fails, the previous prices stay on screen (with their age) and the APIs are retried after a minute.
 - **Per-Asset / Per-Asset Total / Per-Group / BARCA Actual** tabs show the computed breakdown, with deviation from target highlighted.
-- The **Dashboard** tab plots the persisted history (every `Update Prices` click appends a snapshot).
+- The **Dashboard** tab plots the persisted history (every price refresh appends a snapshot for each account).
 - **Portfolio Targets** and **BARCA Targets** tabs (Manager+) are where you actually manage your portfolio day to day — see the next section. `wallet_allocations.csv` is only a one-time seed, not something you keep editing.
 - **Admin** tab (Admin only) manages user accounts (create, change role, reset password, delete).
 
@@ -307,7 +307,7 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
 
 ## History API & Dashboard Data
 
-Every time `/api/allocations` runs (e.g., when you click **Update Prices**) the backend persists the computed snapshot directly into SQLite:
+Every time the shared prices refresh, the backend persists one computed snapshot per portfolio directly into SQLite:
 
 - `history_assets` receives one row per asset (with target %, current %, deviation %, and USD value deviation computed in the database).
 - `history_groups` stores the per-group view that powers both the table and the dashboard.

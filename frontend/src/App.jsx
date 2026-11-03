@@ -64,14 +64,15 @@ function Dashboard({ user, portfolio, onLogout }) {
     barcaAllocations,
     barcaActualAllocations,
     loading,
+    loaded,
     loadError,
     importing,
     exporting,
     importStatus,
     importError,
-    lastUpdate,
+    pricesAsOf,
+    refreshIntervalSecs,
     usdBrl,
-    refresh,
     importFromCsv,
     exportToCsv,
   } = useAllocations();
@@ -124,8 +125,8 @@ function Dashboard({ user, portfolio, onLogout }) {
   return (
     <>
       <AppHeader
-        loading={loading}
-        onRefresh={refresh}
+        pricesAsOf={pricesAsOf}
+        refreshIntervalSecs={refreshIntervalSecs}
         importing={importing}
         onImport={importFromCsv}
         exporting={exporting}
@@ -139,7 +140,7 @@ function Dashboard({ user, portfolio, onLogout }) {
 
       <Container maxWidth="xl" sx={{ py: 3 }}>
         <StatTiles totalWalletValue={totalWalletValue} usdBrl={usdBrl} />
-        <StatusLine lastUpdate={lastUpdate} importStatus={importStatus} importError={importError || loadError} />
+        <StatusLine pricesAsOf={pricesAsOf} importStatus={importStatus} importError={importError || loadError} />
 
         {hasData && DATA_TAB_KEYS.has(activeKey) && (
           <FiltersBar
@@ -169,13 +170,18 @@ function Dashboard({ user, portfolio, onLogout }) {
         </Tabs>
 
         {/* Dashboard/Admin/Portfolio Targets/BARCA Targets each have their
-            own independent data source, so they stay reachable even before
-            the first "Update Prices" click; only the four table tabs need
-            allocations to show anything. */}
-        {DATA_TAB_KEYS.has(activeKey) && !hasData && (
+            own independent data source, so they stay reachable for an
+            account with no holdings yet; only the four table tabs need
+            allocations to show anything. Before the first answer the
+            progress bar shows; after a failed load, StatusLine says why. */}
+        {DATA_TAB_KEYS.has(activeKey) && loaded && !hasData && !loadError && (
           <EmptyState
-            title="No portfolio data yet"
-            description='Click "Update Prices" above to fetch live prices and compute your allocation.'
+            title={`No holdings in ${portfolio.name} yet`}
+            description={
+              canImport
+                ? "Import this account's wallet CSV (Import Wallet CSV above) to see its allocations."
+                : "Its allocations appear here once its manager imports the account's wallet."
+            }
           />
         )}
         {activeKey === "per-asset" && hasData && (

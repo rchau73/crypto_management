@@ -50,7 +50,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .with_context(|| format!("failed to bind {}", config.bind_addr))?;
-    info!(addr = %config.bind_addr, cookie_prefix = %config.cookie_prefix, "Listening");
+    info!(
+        addr = %config.bind_addr,
+        cookie_prefix = %config.cookie_prefix,
+        price_refresh_secs = config.price_refresh.as_secs(),
+        "Listening"
+    );
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

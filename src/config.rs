@@ -4,6 +4,7 @@
 
 use anyhow::{Context, bail};
 use std::net::SocketAddr;
+use std::time::Duration;
 
 pub struct AdminSeed {
     pub username: String,
@@ -24,6 +25,11 @@ pub struct AppConfig {
     pub cookie_prefix: String,
     /// Active BARCA target profile ("BullMarket", "BearMarket"...).
     pub current_market: String,
+    /// How old the shared prices may get before the next request refreshes
+    /// them (`PRICE_REFRESH_MINUTES`, default 5). CoinMarketCap's free plan
+    /// has 10,000 credits a month and a refresh costs 1 per 100 symbols, so
+    /// 5 minutes of constant use stays within it.
+    pub price_refresh: Duration,
     pub coinmarketcap_api_key: String,
     /// Optional: only needed once a br-equities asset is tracked.
     pub brapi_api_key: String,
@@ -49,6 +55,13 @@ fn cookie_prefix(raw: &str) -> anyhow::Result<String> {
         bail!("COOKIE_PREFIX may only contain letters, digits, '_' or '-': {raw:?}");
     }
     Ok(raw.to_string())
+}
+
+fn price_refresh(raw: &str) -> anyhow::Result<Duration> {
+    match raw.trim().parse::<u64>() {
+        Ok(minutes) if minutes >= 1 => Ok(Duration::from_secs(minutes * 60)),
+        _ => bail!("PRICE_REFRESH_MINUTES must be a whole number of minutes, at least 1: {raw:?}"),
+    }
 }
 
 fn required(name: &str, hint: &str) -> anyhow::Result<String> {
@@ -84,6 +97,7 @@ impl AppConfig {
             cookie_secure: optional("COOKIE_SECURE", "false") == "true",
             cookie_prefix: cookie_prefix(&optional("COOKIE_PREFIX", "cm"))?,
             current_market: optional("CURRENT_MARKET", "BullMarket"),
+            price_refresh: price_refresh(&optional("PRICE_REFRESH_MINUTES", "5"))?,
             coinmarketcap_api_key: required("API_KEY", "your CoinMarketCap API key")?,
             brapi_api_key: optional("BRAPI_API_KEY", ""),
             finnhub_api_key: optional("FINNHUB_API_KEY", ""),
@@ -103,6 +117,9 @@ impl AppConfig {
             cookie_secure: false,
             cookie_prefix: "cm".to_string(),
             current_market: "BullMarket".to_string(),
+            // Every request refreshes, like the old "Update Prices"; the
+            // caching itself is tested in allocations_service.
+            price_refresh: Duration::ZERO,
             coinmarketcap_api_key: String::new(),
             brapi_api_key: String::new(),
             finnhub_api_key: String::new(),
@@ -120,6 +137,15 @@ mod tests {
     fn cookie_prefix_accepts_safe_names_and_empty() {
         assert_eq!(cookie_prefix("crypto-mgmt_2").unwrap(), "crypto-mgmt_2");
         assert_eq!(cookie_prefix("").unwrap(), "");
+    }
+
+    #[test]
+    fn price_refresh_is_whole_minutes_of_at_least_one() {
+        assert_eq!(price_refresh("5").unwrap(), Duration::from_secs(300));
+        assert_eq!(price_refresh(" 30 ").unwrap(), Duration::from_secs(1800));
+        for bad in ["0", "-1", "0.5", "ten", ""] {
+            assert!(price_refresh(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]

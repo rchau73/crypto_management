@@ -1,12 +1,13 @@
 import { AppBar, Button, Stack, Toolbar, Typography } from "@mui/material";
 import { ActionsBar } from "./ActionsBar";
 import { PortfolioSwitcher } from "./PortfolioSwitcher";
+import { PricesAge } from "./PricesAge";
 
-// Sticky top bar: title + the two primary actions stay reachable while
-// scrolling a long table, instead of scrolling away with the rest of the page.
+// Sticky top bar: title, account, how fresh the prices are, and the wallet
+// file actions stay reachable while scrolling a long table.
 export function AppHeader({
-  loading,
-  onRefresh,
+  pricesAsOf,
+  refreshIntervalSecs,
   importing,
   onImport,
   exporting,
@@ -35,9 +36,8 @@ export function AppHeader({
           </Typography>
           <PortfolioSwitcher />
         </Stack>
+        <PricesAge pricesAsOf={pricesAsOf} refreshIntervalSecs={refreshIntervalSecs} />
         <ActionsBar
-          loading={loading}
-          onRefresh={onRefresh}
           importing={importing}
           onImport={onImport}
           exporting={exporting}
