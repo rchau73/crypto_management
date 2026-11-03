@@ -2,12 +2,13 @@
 // tested once here instead of in every component that needs them.
 
 export const PAGES = [
+  { key: "rebalance", label: "Rebalance", hint: "what to do now" },
   { key: "holdings", label: "Holdings", hint: "every position vs target" },
   { key: "history", label: "History", hint: "value over time" },
   { key: "targets", label: "Targets", hint: "asset and BARCA targets", needs: "edit" },
   { key: "settings", label: "Settings", hint: "accounts and users", needs: "manager" },
 ];
-export const DEFAULT_PAGE = "holdings";
+export const DEFAULT_PAGE = "rebalance";
 
 export function isManager(user) {
   return user?.role === "manager" || user?.role === "admin";

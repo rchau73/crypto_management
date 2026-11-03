@@ -16,6 +16,7 @@ flowchart TD
     end
 
     subgraph TABS["components/tabs/ — one per page"]
+        TR["RebalanceTab (start page)\nSentimentPicker · BarcaBands · RoundSteps"]
         T0["HoldingsTab\n(View by position · asset · group · BARCA)"]
         T1["DashboardTab\n(History)"]
         T2["TargetsTab → PortfolioTargetsTab,\nBarcaTargetsTab (can edit)"]
@@ -44,6 +45,7 @@ flowchart TD
         FMT["formatters.js · time.js"]
         MATH["allocationMath.js\n(BARCA band)"]
         HOLD["holdings.js\n(rows per view)"]
+        REB["rebalance.js\n(round planner, BARCA rules)"]
         NAVU["navigation.js · route.js · search.js"]
         BUCKET["historyBucketing.js"]
     end
@@ -62,6 +64,7 @@ flowchart TD
     ROOT --> STATS
     ROOT --> STATUS
     ROOT --> EMPTY
+    ROOT -->|page = rebalance| TR
     ROOT -->|page = holdings| T0
     ROOT -->|page = history| T1
     ROOT -->|page = targets| T2

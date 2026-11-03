@@ -7,12 +7,12 @@ const view = { access: "view" };
 
 describe("visiblePages", () => {
   it("shows a user only the read-only pages", () => {
-    expect(keys({ role: "user" }, manage)).toEqual(["holdings", "history"]);
+    expect(keys({ role: "user" }, manage)).toEqual(["rebalance", "holdings", "history"]);
   });
 
   it("shows Targets only with manage access to this account", () => {
-    expect(keys({ role: "manager" }, manage)).toEqual(["holdings", "history", "targets", "settings"]);
-    expect(keys({ role: "manager" }, view)).toEqual(["holdings", "history", "settings"]);
+    expect(keys({ role: "manager" }, manage)).toEqual(["rebalance", "holdings", "history", "targets", "settings"]);
+    expect(keys({ role: "manager" }, view)).toEqual(["rebalance", "holdings", "history", "settings"]);
   });
 
   it("gives an admin the same pages as a manager", () => {
@@ -21,11 +21,11 @@ describe("visiblePages", () => {
 });
 
 describe("resolvePage", () => {
-  it("keeps a visible page and falls back to Holdings otherwise", () => {
+  it("keeps a visible page and falls back to Rebalance otherwise", () => {
     expect(resolvePage("history", { role: "user" }, view)).toBe("history");
-    expect(resolvePage("targets", { role: "user" }, manage)).toBe("holdings");
-    expect(resolvePage("nonsense", { role: "admin" }, manage)).toBe("holdings");
-    expect(resolvePage("", { role: "admin" }, manage)).toBe("holdings");
+    expect(resolvePage("targets", { role: "user" }, manage)).toBe("rebalance");
+    expect(resolvePage("nonsense", { role: "admin" }, manage)).toBe("rebalance");
+    expect(resolvePage("", { role: "admin" }, manage)).toBe("rebalance");
   });
 });
 

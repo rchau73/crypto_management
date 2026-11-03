@@ -115,7 +115,7 @@ function Cell({ column, row }) {
     case "status":
       return (
         <TableCell sx={{ ...compactCellSx, whiteSpace: "nowrap" }}>
-          <DeviationBadge severity={row.status === "in" ? "normal" : "high"}>{STATUS_LABEL[row.status]}</DeviationBadge>
+          <DeviationBadge status={row.status}>{STATUS_LABEL[row.status]}</DeviationBadge>
         </TableCell>
       );
     case "step": {

@@ -61,6 +61,17 @@ export const STATUS_COLORS = {
   critical: "#d03b3b",
 };
 
+// Band status (BARCA rule 1): above its band (overweight, the sell side)
+// is green, below (underweight, the buy side) is red. Lighter than
+// STATUS_COLORS so small text passes WCAG AA on the dark cards (7.2:1 and
+// 6.1:1 on the paper surface; the darker critical red is only 3.6:1). In
+// band has no color. Always paired with a dot and words, never color alone.
+export const BAND_COLORS = {
+  above: "#2fbf4f",
+  below: "#f07272",
+  in: null,
+};
+
 export const CHART_GRID = GRID;
 export const CHART_AXIS = AXIS;
 export const CHART_MUTED_TEXT = MUTED;
