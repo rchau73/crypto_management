@@ -1,9 +1,9 @@
 import { Box, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import { AllocationPieChart } from "../AllocationPieChart";
 import { DeviationBadge } from "../DeviationBadge";
-import { getTotalTargetPercent } from "../../utils/allocationMath";
+import { bandSeverity, getTotalTargetPercent, valueGapFromDeviation } from "../../utils/allocationMath";
 import { formatNumber } from "../../utils/formatters";
-import { numericCellSx, zebraRowSx } from "../../styles/tableStyles";
+import { compactCellSx, numericCellSx, zebraRowSx } from "../../styles/tableStyles";
 import { colorForSeries } from "../../theme";
 
 // Tab 2: per-group table (values already computed server-side, no client
@@ -12,6 +12,8 @@ export function PerGroupTab({ groupAllocations }) {
   if (groupAllocations.length === 0) return null;
 
   const allGroupNames = groupAllocations.map((g) => g.group);
+  // Group values cover every priced asset, so together they are the wallet total.
+  const totalValue = groupAllocations.reduce((sum, g) => sum + (g.value || 0), 0);
   const pieData = groupAllocations.filter((g) => g.value > 0).map((g) => ({ name: g.group, value: g.value }));
 
   return (
@@ -35,11 +37,11 @@ export function PerGroupTab({ groupAllocations }) {
           </TableHead>
           <TableBody>
             {groupAllocations.map((g, idx) => {
-              const deviationValue = g.value * (g.deviation / 100);
-              const severity = Math.abs(g.deviation) > 1 ? "high" : "normal";
+              const deviationValue = valueGapFromDeviation(g.deviation, totalValue);
+              const severity = bandSeverity(g.current_percent, g.target_percent);
               return (
                 <TableRow key={idx} hover sx={zebraRowSx}>
-                  <TableCell sx={{ fontSize: 10 }}>{g.group}</TableCell>
+                  <TableCell sx={compactCellSx}>{g.group}</TableCell>
                   <TableCell align="right" sx={numericCellSx}>
                     ${formatNumber(g.value)}
                   </TableCell>
@@ -53,7 +55,8 @@ export function PerGroupTab({ groupAllocations }) {
                     </DeviationBadge>
                   </TableCell>
                   <TableCell align="right" sx={numericCellSx}>
-                    ${formatNumber(deviationValue)}
+                    {deviationValue > 0 ? "+$" : deviationValue < 0 ? "-$" : "$"}
+                    {formatNumber(Math.abs(deviationValue))}
                   </TableCell>
                 </TableRow>
               );

@@ -1,4 +1,4 @@
-import { toBrt } from "../utils/historyBucketing";
+import { toBrt } from "../utils/time";
 import { formatNumber } from "../utils/formatters";
 import "../styles/chartTooltip.css";
 

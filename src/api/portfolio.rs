@@ -6,7 +6,7 @@
 use crate::api::AppState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::portfolios::PortfolioScope;
-use crate::domain::models::{AllocationReport, BarcaTarget, NewBarcaTarget, WalletPosition};
+use crate::domain::models::{BarcaTarget, NewBarcaTarget, PricedReport, WalletPosition};
 use crate::usecases::history_service::HistoryLevel;
 use crate::usecases::targets_service::{QuantityCorrection, TargetRow};
 use crate::usecases::wallet_import::ImportSummary;
@@ -22,7 +22,7 @@ use tracing::info;
 pub async fn allocations(
     scope: PortfolioScope,
     State(state): State<AppState>,
-) -> ApiResult<Json<AllocationReport>> {
+) -> ApiResult<Json<PricedReport>> {
     Ok(Json(
         state.allocations.refresh_prices(scope.portfolio).await?,
     ))

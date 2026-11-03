@@ -3,7 +3,6 @@ import { STATUS_COLORS } from "../theme";
 
 const SEVERITY_COLOR = {
   high: STATUS_COLORS.critical,
-  medium: STATUS_COLORS.warning,
   normal: null,
 };
 

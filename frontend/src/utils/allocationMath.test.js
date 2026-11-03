@@ -3,8 +3,9 @@ import {
   aggregateBySymbol,
   computeYAxisDomain,
   deriveRowMetrics,
-  deviationSeverity,
+  bandSeverity,
   getTotalTargetPercent,
+  valueGapFromDeviation,
 } from "./allocationMath";
 
 describe("deriveRowMetrics", () => {
@@ -25,22 +26,47 @@ describe("deriveRowMetrics", () => {
 
   it("treats a missing target_percent as 0, not NaN", () => {
     const metrics = deriveRowMetrics({ value: 100 }, 1000);
-    expect(metrics.relativeDeviation).toBe(0);
-    expect(Number.isNaN(metrics.deviation)).toBe(false);
+    expect(metrics.deviation).toBe(10);
+    expect(Number.isNaN(metrics.valueDeviation)).toBe(false);
   });
 });
 
-describe("deviationSeverity", () => {
-  it("is high when the absolute deviation exceeds 1 point regardless of target size", () => {
-    expect(deviationSeverity({ deviation: 5, relativeDeviation: 0.01 })).toBe("high");
+describe("bandSeverity (BARCA rule 1: target ± 20% of target)", () => {
+  it("is high outside the band, whatever the target size", () => {
+    expect(bandSeverity(38, 50)).toBe("high"); // band 40-60
+    expect(bandSeverity(13, 10)).toBe("high"); // band 8-12
+    expect(bandSeverity(0, 5)).toBe("high"); // fully sold, still targeted
   });
 
-  it("is medium when a small absolute deviation is still >=20% relative to a small target", () => {
-    expect(deviationSeverity({ deviation: 0.5, relativeDeviation: 0.25 })).toBe("medium");
+  it("is normal inside the band, even when several points off a big target", () => {
+    // Regression: a 3-point miss on a 50% target used to be red (">1 point").
+    expect(bandSeverity(53, 50)).toBe("normal");
+    expect(bandSeverity(11.5, 10)).toBe("normal");
   });
 
-  it("is normal otherwise", () => {
-    expect(deviationSeverity({ deviation: 0.2, relativeDeviation: 0.05 })).toBe("normal");
+  it("treats the band edge as inside ('more than 20%')", () => {
+    expect(bandSeverity(60, 50)).toBe("normal");
+    expect(bandSeverity(40, 50)).toBe("normal");
+  });
+
+  it("flags holdings with no target, but not an empty untargeted row", () => {
+    expect(bandSeverity(0.5, 0)).toBe("high");
+    expect(bandSeverity(0, 0)).toBe("normal");
+    expect(bandSeverity(undefined, undefined)).toBe("normal");
+  });
+});
+
+describe("valueGapFromDeviation", () => {
+  it("measures the points against the whole wallet, not the row's value", () => {
+    // A group worth $2,000 that is 5 points over target in a $10,000 wallet
+    // is $500 over. Regression: it used to show 5% of $2,000 = $100.
+    expect(valueGapFromDeviation(5, 10000)).toBe(500);
+    expect(valueGapFromDeviation(-2.5, 10000)).toBe(-250);
+  });
+
+  it("is 0 for a missing deviation or an empty wallet", () => {
+    expect(valueGapFromDeviation(undefined, 10000)).toBe(0);
+    expect(valueGapFromDeviation(5, 0)).toBe(0);
   });
 });
 

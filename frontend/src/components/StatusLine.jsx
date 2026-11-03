@@ -1,5 +1,5 @@
 import { Typography } from "@mui/material";
-import dayjs from "dayjs";
+import { formatBrt } from "../utils/time";
 
 export function StatusLine({ lastUpdate, importStatus, importError }) {
   if (!lastUpdate && !importStatus && !importError) return null;
@@ -7,7 +7,7 @@ export function StatusLine({ lastUpdate, importStatus, importError }) {
   return (
     <>
       <Typography variant="body2" sx={{ color: "text.secondary", mb: importError ? 0.5 : 2 }}>
-        {lastUpdate && <>Last update: {dayjs(lastUpdate).subtract(3, "hour").format("YYYY-MM-DD HH:mm:ss")}</>}
+        {lastUpdate && <>Last update: {formatBrt(lastUpdate)}</>}
         {lastUpdate && importStatus && " · "}
         {importStatus}
       </Typography>

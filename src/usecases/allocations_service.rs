@@ -3,8 +3,7 @@
 
 use crate::domain::market_data::{CryptoProvider, EquityProvider, FxProvider};
 use crate::domain::models::{
-    AllocationReport, AllocationSnapshot, AssetClass, FxRate, MarketQuote, PortfolioId,
-    WalletPosition,
+    AllocationSnapshot, AssetClass, FxRate, MarketQuote, PortfolioId, PricedReport, WalletPosition,
 };
 use crate::domain::repository::{BarcaTargetRepo, PortfolioRepo, RepoError, SnapshotRepo};
 use crate::usecases::compute_allocations::compute_allocations;
@@ -50,6 +49,8 @@ pub struct MarketProviders {
 struct PricedQuotes {
     quotes: Vec<MarketQuote>,
     asset_notes: HashMap<String, String>,
+    /// This round's USD/BRL rate, if PTAX answered.
+    usd_brl: Option<FxRate>,
 }
 
 pub struct AllocationsService {
@@ -89,11 +90,12 @@ impl AllocationsService {
     pub async fn refresh_prices(
         &self,
         portfolio: PortfolioId,
-    ) -> Result<AllocationReport, AllocationsError> {
+    ) -> Result<PricedReport, AllocationsError> {
         let positions = self.portfolio.fetch_positions(portfolio).await?;
         let PricedQuotes {
             quotes,
             asset_notes,
+            usd_brl,
         } = self.fetch_all_quotes(&positions).await?;
 
         let barca_targets: HashMap<String, f64> = self
@@ -125,7 +127,7 @@ impl AllocationsService {
             market = %self.current_market,
             "Computed and recorded allocation snapshot"
         );
-        Ok(report)
+        Ok(PricedReport { report, usd_brl })
     }
 
     async fn fetch_all_quotes(
@@ -140,6 +142,16 @@ impl AllocationsService {
             .map_err(AllocationsError::CryptoPrices)?;
         let mut asset_notes = HashMap::new();
 
+        // Fetched every round, not only when there are Brazilian assets:
+        // the UI also uses it to show the total in reais.
+        let usd_brl = match self.providers.usd_brl.fetch_usd_brl().await {
+            Ok(fx) => Some(fx),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to fetch the PTAX rate");
+                None
+            }
+        };
+
         let br_quotes = self
             .fetch_equity_quotes(
                 positions,
@@ -148,22 +160,21 @@ impl AllocationsService {
             )
             .await;
         if !br_quotes.is_empty() {
-            match self.providers.usd_brl.fetch_usd_brl().await {
-                Ok(fx) => {
+            match &usd_brl {
+                Some(fx) => {
                     tracing::info!(
                         brl_per_usd = fx.brl_per_usd,
                         ptax_quoted_at = %fx.quoted_at,
                         symbols = br_quotes.len(),
                         "Converting Brazilian quotes from BRL to USD (PTAX venda)"
                     );
-                    let converted = convert_brl_to_usd(br_quotes, &fx);
+                    let converted = convert_brl_to_usd(br_quotes, fx);
                     quotes.extend(converted.quotes);
                     asset_notes.extend(converted.asset_notes);
                 }
-                Err(e) => tracing::error!(
-                    error = %e,
+                None => tracing::error!(
                     symbols = ?br_quotes.iter().map(|q| &q.symbol).collect::<Vec<_>>(),
-                    "Failed to fetch the PTAX rate — Brazilian assets are left out of this refresh"
+                    "No PTAX rate — Brazilian assets are left out of this refresh"
                 ),
             }
         }
@@ -175,6 +186,7 @@ impl AllocationsService {
         Ok(PricedQuotes {
             quotes,
             asset_notes,
+            usd_brl,
         })
     }
 
@@ -228,6 +240,7 @@ fn convert_brl_to_usd(brl_quotes: Vec<MarketQuote>, fx: &FxRate) -> PricedQuotes
     PricedQuotes {
         quotes,
         asset_notes,
+        usd_brl: Some(fx.clone()),
     }
 }
 
@@ -330,7 +343,8 @@ mod tests {
         )
         .refresh_prices(PORTFOLIO)
         .await
-        .unwrap();
+        .unwrap()
+        .report;
 
         // HGRU11: 10 × (R$100 / 5.0) = $200, plus BTC $10.
         assert_eq!(report.total_value, 210.0);
@@ -356,7 +370,8 @@ mod tests {
         )
         .refresh_prices(PORTFOLIO)
         .await
-        .unwrap();
+        .unwrap()
+        .report;
 
         let price = |symbol: &str| {
             report
@@ -386,12 +401,64 @@ mod tests {
         )
         .refresh_prices(PORTFOLIO)
         .await
-        .unwrap();
+        .unwrap()
+        .report;
 
         let symbols: Vec<_> = report.per_asset.iter().map(|a| a.symbol.as_str()).collect();
         assert_eq!(symbols, ["BTC"]);
         assert_eq!(report.total_value, 10.0);
         assert_eq!(repo.fetch_total_history(PORTFOLIO).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn returns_the_usd_brl_rate_even_without_brazilian_assets() {
+        // The UI shows the total in reais with it (it used a fixed 5.6).
+        let repo = test_repo().await;
+        seed(&repo, "BTC", "crypto", 1.0, 100.0).await;
+
+        let priced = service(
+            repo,
+            providers_with_fx(
+                FakeProvider::with_prices(&[("BTC", 10.0)]),
+                FakeProvider::empty(),
+                FakeFx(Some(5.2)),
+            ),
+        )
+        .refresh_prices(PORTFOLIO)
+        .await
+        .unwrap();
+
+        let fx = priced.usd_brl.clone().expect("rate included");
+        assert_eq!(fx.brl_per_usd, 5.2);
+        assert_eq!(fx.quoted_at, "2026-10-01 13:10:35");
+        let json = serde_json::to_value(&priced).unwrap();
+        assert_eq!(
+            json["total_value"], 10.0,
+            "report fields stay at the top level"
+        );
+        assert_eq!(json["usd_brl"]["brl_per_usd"], 5.2);
+    }
+
+    #[tokio::test]
+    async fn without_ptax_the_rate_is_none_and_the_refresh_still_succeeds() {
+        let repo = test_repo().await;
+        seed(&repo, "BTC", "crypto", 1.0, 100.0).await;
+
+        let priced = service(
+            repo,
+            providers_with_fx(
+                FakeProvider::with_prices(&[("BTC", 10.0)]),
+                FakeProvider::empty(),
+                FakeFx(None),
+            ),
+        )
+        .refresh_prices(PORTFOLIO)
+        .await
+        .unwrap();
+
+        assert_eq!(priced.usd_brl, None);
+        assert_eq!(priced.report.total_value, 10.0);
+        assert!(serde_json::to_value(&priced).unwrap()["usd_brl"].is_null());
     }
 
     #[test]
@@ -442,7 +509,8 @@ mod tests {
         )
         .refresh_prices(PORTFOLIO)
         .await
-        .unwrap();
+        .unwrap()
+        .report;
 
         let symbols: Vec<_> = report.per_asset.iter().map(|a| a.symbol.as_str()).collect();
         assert_eq!(symbols, ["BTC"]);
@@ -486,7 +554,8 @@ mod tests {
         )
         .refresh_prices(PORTFOLIO)
         .await
-        .unwrap();
+        .unwrap()
+        .report;
 
         assert_eq!(report.per_barca[0].target_percent, 100.0);
     }

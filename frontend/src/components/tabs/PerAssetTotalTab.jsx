@@ -4,7 +4,7 @@ import { PaginationControls } from "../PaginationControls";
 import { DeviationBadge } from "../DeviationBadge";
 import { useSortableData } from "../../hooks/useSortableData";
 import { usePagination } from "../../hooks/usePagination";
-import { deriveRowMetrics, deviationSeverity, getTotalTargetPercent } from "../../utils/allocationMath";
+import { bandSeverity, deriveRowMetrics, getTotalTargetPercent } from "../../utils/allocationMath";
 import { formatNumber, formatPrice } from "../../utils/formatters";
 import { compactCellSx, numericCellSx, zebraRowSx } from "../../styles/tableStyles";
 
@@ -66,7 +66,7 @@ export function PerAssetTotalTab({ rows, totalValue, isFiltered, filterKey }) {
           <TableBody>
             {paginatedRows.map((row, idx) => {
               const metrics = deriveRowMetrics(row, totalValue);
-              const severity = deviationSeverity(metrics);
+              const severity = bandSeverity(metrics.currentPercent, row.target_percent);
               return (
                 <TableRow key={row.symbol || idx} hover sx={zebraRowSx}>
                   <TableCell sx={{ ...compactCellSx, whiteSpace: "nowrap" }}>{row.symbol}</TableCell>

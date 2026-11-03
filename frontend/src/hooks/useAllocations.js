@@ -22,6 +22,8 @@ export function useAllocations() {
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
   const [lastUpdate, setLastUpdate] = useState(null);
+  // { brl_per_usd, quoted_at } from the Banco Central, or null.
+  const [usdBrl, setUsdBrl] = useState(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -32,6 +34,7 @@ export function useAllocations() {
       setGroupAllocations(data.per_group || []);
       setBarcaAllocations(data.per_barca || []);
       setBarcaActualAllocations(data.per_barca_actual || []);
+      setUsdBrl(data.usd_brl ?? null);
       setLastUpdate(new Date());
     } catch (err) {
       // Shown inline by StatusLine (alert() would block the page).
@@ -84,6 +87,7 @@ export function useAllocations() {
     importStatus,
     importError,
     lastUpdate,
+    usdBrl,
     refresh,
     importFromCsv,
     exportToCsv,

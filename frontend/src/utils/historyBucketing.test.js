@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bucketKeyFor, groupHistoryByPeriod, parseHistoryRows, toBrt, topSeriesByValue } from "./historyBucketing";
+import { bucketKeyFor, groupHistoryByPeriod, parseHistoryRows, topSeriesByValue } from "./historyBucketing";
+import { toBrt } from "./time";
 
 describe("parseHistoryRows", () => {
   it("extracts symbol/value pairs for the assets level", () => {
