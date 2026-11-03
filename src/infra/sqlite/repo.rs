@@ -7,7 +7,8 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, User, WalletPosition,
+    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, TradeRecord, User,
+    WalletPosition,
 };
 use crate::domain::repository::{
     BarcaTargetRepo, NewUser, PortfolioDirectoryRepo, PortfolioRepo, RefreshTokenRepo, RepoError,
@@ -24,6 +25,12 @@ pub struct SqliteRepo {
 impl SqliteRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// For tests that check a table no port reads (e.g. the trades log).
+    #[cfg(test)]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 }
 
@@ -176,6 +183,39 @@ impl PortfolioRepo for SqliteRepo {
             .execute(&mut *tx)
             .await?;
         }
+        insert_ledger_entries(&mut tx, portfolio, new_entries).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn record_trade(
+        &self,
+        portfolio: PortfolioId,
+        trade: &TradeRecord,
+        new_entries: &[LedgerEntry],
+    ) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO trades \
+             (portfolio_id, side, symbol, group_name, barca, asset_class, source, quantity, \
+              price, cash_symbol, cash_source, cash_quantity, recorded_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        )
+        .bind(portfolio)
+        .bind(trade.side.as_str())
+        .bind(&trade.symbol)
+        .bind(&trade.group_name)
+        .bind(&trade.barca)
+        .bind(&trade.asset_class)
+        .bind(&trade.source)
+        .bind(trade.quantity)
+        .bind(trade.price)
+        .bind(&trade.cash_symbol)
+        .bind(&trade.cash_source)
+        .bind(trade.cash_quantity)
+        .bind(trade.recorded_by)
+        .execute(&mut *tx)
+        .await?;
         insert_ledger_entries(&mut tx, portfolio, new_entries).await?;
         tx.commit().await?;
         Ok(())

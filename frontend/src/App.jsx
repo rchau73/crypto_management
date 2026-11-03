@@ -51,6 +51,7 @@ function Dashboard({ user, portfolio, onLogout }) {
     usdBrl,
     importFromCsv,
     exportToCsv,
+    reload,
   } = useAllocations();
   const route = useHashRoute();
   const wide = useMediaQuery(darkTheme.breakpoints.up("md"));
@@ -135,6 +136,9 @@ function Dashboard({ user, portfolio, onLogout }) {
               pricesAsOf={pricesAsOf}
               refreshIntervalSecs={refreshIntervalSecs}
               onOpenHoldings={() => go("holdings", { out: "1" })}
+              accountName={portfolio.name}
+              canRecord={canImport}
+              onTradeRecorded={() => reload({ silent: true })}
             />
           )}
           {page === "holdings" && hasData && <HoldingsTab report={report} params={route.params} onParamsChange={setParams} />}

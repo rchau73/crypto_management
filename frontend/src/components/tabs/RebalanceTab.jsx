@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { SentimentPicker } from "../SentimentPicker";
 import { BarcaBands } from "../BarcaBands";
 import { RoundSteps } from "../RoundSteps";
+import { RecordTradeDialog } from "../RecordTradeDialog";
 import { planRound } from "../../utils/rebalance";
 import { describePricesAge } from "../../utils/pricesAge";
 
@@ -10,10 +11,33 @@ import { describePricesAge } from "../../utils/pricesAge";
 // Where each BARCA stands against its band, the market sentiment (asked on
 // every visit), and the round's buy/sell steps with the reason for any
 // bucket that waits. `sentiment` and `done` live in App, so they last for
-// this visit and account only.
-export function RebalanceTab({ report, sentiment, onSentimentChange, done, onToggleDone, pricesAsOf, refreshIntervalSecs, onOpenHoldings }) {
+// this visit and account only. With `canRecord`, a trade made on an
+// exchange is recorded here (RecordTradeDialog) instead of through a CSV.
+export function RebalanceTab({
+  report,
+  sentiment,
+  onSentimentChange,
+  done,
+  onToggleDone,
+  pricesAsOf,
+  refreshIntervalSecs,
+  onOpenHoldings,
+  accountName,
+  canRecord,
+  onTradeRecorded,
+}) {
   const plan = useMemo(() => planRound(report, sentiment), [report, sentiment]);
   const { label: pricesLabel, stale } = describePricesAge(pricesAsOf, refreshIntervalSecs);
+  // undefined = closed; null = open for any position; a step = pre-filled.
+  const [recording, setRecording] = useState(undefined);
+  const [notice, setNotice] = useState("");
+
+  const recorded = ({ stepId, message }) => {
+    setRecording(undefined);
+    setNotice(message);
+    if (stepId && !done.has(stepId)) onToggleDone(stepId);
+    onTradeRecorded();
+  };
 
   return (
     <Box>
@@ -35,13 +59,43 @@ export function RebalanceTab({ report, sentiment, onSentimentChange, done, onTog
         </Alert>
       )}
 
+      {notice && (
+        <Alert severity="success" sx={{ mb: 2 }} onClose={() => setNotice("")}>
+          {notice}
+        </Alert>
+      )}
+
       <Stack spacing={2}>
         <SentimentPicker value={sentiment} onChange={onSentimentChange} />
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" }, alignItems: "start" }}>
           <BarcaBands rows={plan.barcas} />
-          <RoundSteps plan={plan} sentiment={sentiment} done={done} onToggle={onToggleDone} />
+          <RoundSteps
+            plan={plan}
+            sentiment={sentiment}
+            done={done}
+            onToggle={onToggleDone}
+            onRecord={canRecord ? (step) => setRecording(step) : undefined}
+          />
         </Box>
       </Stack>
+
+      {recording !== undefined && (
+        <RecordTradeDialog
+          preset={
+            recording && {
+              side: recording.verb === "Buy" ? "buy" : "sell",
+              symbol: recording.symbol,
+              barca: recording.barca,
+              amount: recording.amount,
+              stepId: recording.id,
+            }
+          }
+          allocations={report.allocations}
+          accountName={accountName}
+          onClose={() => setRecording(undefined)}
+          onRecorded={recorded}
+        />
+      )}
     </Box>
   );
 }

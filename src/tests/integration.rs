@@ -511,6 +511,73 @@ async fn correcting_quantity_works_for_one_source_and_is_refused_for_several() {
 }
 
 #[tokio::test]
+async fn recording_a_trade_moves_that_exchange_and_the_allocations_follow() {
+    let app = default_app().await;
+    let trade = |qty: f64| {
+        json!({
+            "side": "sell",
+            "asset": { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Binance" },
+            "quantity": qty,
+            "price": 10.0,
+            "cash": { "position": { "symbol": "ETH", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Kraken" }, "quantity": 1.0 },
+        })
+    };
+
+    let viewer = login(&app, "viewer").await;
+    let (status, _) = send(
+        &app,
+        with_json("POST", "/api/portfolios/1/trades", &viewer, trade(0.2)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let manager = login(&app, "manager").await;
+    let (status, body) = send(
+        &app,
+        with_json("POST", "/api/portfolios/1/trades", &manager, trade(0.2)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["asset_quantity"], 0.3);
+    assert_eq!(body["cash_quantity"], 3.0);
+    // Ledger 1.0 untouched + Binance 0.5 - 0.2.
+    assert_eq!(btc_quantity(&app, &manager).await, 1.3);
+    let (_, report) = send(&app, get("/api/portfolios/1/allocations", &manager)).await;
+    let btc = report["per_asset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["symbol"] == "BTC")
+        .unwrap();
+    assert_eq!(btc["value"], 13.0);
+
+    // Binance has 0.3 BTC left: selling 1.0 there is refused, nothing moves.
+    let (status, body) = send(
+        &app,
+        with_json("POST", "/api/portfolios/1/trades", &manager, trade(1.0)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Binance holds 0.3 BTC")
+    );
+    assert_eq!(btc_quantity(&app, &manager).await, 1.3);
+
+    let (status, sources) = send(&app, get("/api/portfolios/1/sources", &viewer)).await;
+    assert_eq!(status, StatusCode::OK);
+    let binance = sources
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["symbol"] == "BTC" && s["notes"] == "Binance")
+        .unwrap();
+    assert_eq!(binance["current_quantity"], 0.3);
+}
+
+#[tokio::test]
 async fn barca_targets_round_trip_for_a_manager() {
     let app = default_app().await;
     let manager = login(&app, "manager").await;
@@ -756,6 +823,7 @@ async fn a_non_member_gets_404_on_every_route_of_the_portfolio() {
         "/api/portfolios/1/targets",
         "/api/portfolios/1/barca/targets?market=BullMarket",
         "/api/portfolios/1/export_wallets",
+        "/api/portfolios/1/sources",
     ];
     for uri in gets {
         let (status, _) = send(&app, get(uri, &outsider)).await;
@@ -785,6 +853,12 @@ async fn a_non_member_gets_404_on_every_route_of_the_portfolio() {
             "/api/portfolios/1",
             &outsider,
             json!({ "name": "Mine" }),
+        ),
+        with_json(
+            "POST",
+            "/api/portfolios/1/trades",
+            &outsider,
+            json!({ "side": "buy", "asset": { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Binance" }, "quantity": 1.0, "price": 10.0 }),
         ),
         csv_upload(&outsider, "wallet.csv", NEW_ASSET_CSV),
     ];

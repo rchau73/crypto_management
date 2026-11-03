@@ -4,6 +4,7 @@ pub mod compute_allocations;
 pub mod history_service;
 pub mod portfolio_service;
 pub mod targets_service;
+pub mod trade_service;
 pub mod user_service;
 pub mod validation;
 pub mod wallet_export;

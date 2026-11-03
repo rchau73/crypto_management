@@ -1,18 +1,28 @@
-import { Box, Checkbox, FormControlLabel, Paper, Stack, Typography } from "@mui/material";
+import { Box, Button, Checkbox, FormControlLabel, Paper, Stack, Typography } from "@mui/material";
 import { formatNumber } from "../utils/formatters";
 import { CASH_BARCA } from "../utils/rebalance";
 
 // "This round's steps": what to buy or sell now, one checkbox each. Ticking
 // only tracks progress while you place the orders elsewhere — the app
 // never trades. `done` is a set of step ids kept for this visit only.
-export function RoundSteps({ plan, sentiment, done, onToggle }) {
+// With `onRecord` (manage access), each step can also record the trade
+// you made, which updates the wallet and ticks the step.
+export function RoundSteps({ plan, sentiment, done, onToggle, onRecord }) {
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="h6" component="h2" sx={{ fontWeight: 700 }}>
-        This round's steps
-      </Typography>
+    <Paper variant="outlined" component="section" aria-labelledby="round-steps-title" sx={{ p: 2 }}>
+      <Stack direction="row" sx={{ alignItems: "baseline", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
+        <Typography id="round-steps-title" variant="h6" component="h2" sx={{ fontWeight: 700 }}>
+          This round's steps
+        </Typography>
+        {onRecord && (
+          <Button size="small" onClick={() => onRecord(null)}>
+            Record a trade
+          </Button>
+        )}
+      </Stack>
       <Typography variant="body2" sx={{ color: "text.secondary", mb: 2 }}>
-        Each step is 30% of the $ gap (DCA). Ticking a step only tracks your progress; the app never places orders.
+        Each step is 30% of the $ gap (DCA). The app never places orders: trade on your exchange, then record it here
+        {onRecord ? "" : " (needs manage access)"}.
       </Typography>
 
       {!sentiment ? (
@@ -31,11 +41,21 @@ export function RoundSteps({ plan, sentiment, done, onToggle }) {
             return (
               <Box
                 key={step.id}
-                sx={{ border: 1, borderColor: "divider", borderRadius: 2, px: 1.5, py: 1, opacity: isDone ? 0.55 : 1 }}
+                sx={{
+                  border: 1,
+                  borderColor: "divider",
+                  borderRadius: 2,
+                  px: 1.5,
+                  py: 1,
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 1,
+                  flexWrap: { xs: "wrap", sm: "nowrap" },
+                }}
               >
                 <FormControlLabel
                   control={<Checkbox checked={isDone} onChange={() => onToggle(step.id)} />}
-                  sx={{ alignItems: "flex-start", m: 0, width: "100%" }}
+                  sx={{ alignItems: "flex-start", m: 0, flex: 1, opacity: isDone ? 0.55 : 1 }}
                   label={
                     <Box sx={{ pt: 1, textDecoration: isDone ? "line-through" : "none" }}>
                       <Typography sx={{ fontWeight: 700, fontSize: 17, fontVariantNumeric: "tabular-nums" }}>
@@ -51,6 +71,17 @@ export function RoundSteps({ plan, sentiment, done, onToggle }) {
                     </Box>
                   }
                 />
+                {onRecord && (
+                  <Button
+                    variant={isDone ? "text" : "outlined"}
+                    size="small"
+                    sx={{ mt: 1, minHeight: 40, whiteSpace: "nowrap", ml: { xs: 5, sm: 0 } }}
+                    onClick={() => onRecord(step)}
+                    aria-label={`Record trade: ${step.verb} ${step.symbol}`}
+                  >
+                    Record trade
+                  </Button>
+                )}
               </Box>
             );
           })}

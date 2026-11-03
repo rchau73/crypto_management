@@ -121,8 +121,9 @@ impl WalletPosition {
 
 /// The latest ledger row of one funding source of a position (same key +
 /// same `notes`) — what `wallet_allocations_current` sums per position.
-/// Used to export the wallet one line per source, like the wallet CSV.
-#[derive(Debug, Clone, FromRow, PartialEq)]
+/// Used to export the wallet one line per source, like the wallet CSV, and
+/// by the "Record trade" dialog to pick the exchange a trade happened on.
+#[derive(Debug, Clone, FromRow, PartialEq, Serialize)]
 pub struct PositionSource {
     pub symbol: String,
     pub group_name: Option<String>,
@@ -141,6 +142,45 @@ impl PositionSource {
             asset_class: self.asset_class.clone(),
         }
     }
+}
+
+/// Whether a recorded trade added to the position or took from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TradeSide {
+    Buy,
+    Sell,
+}
+
+impl TradeSide {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TradeSide::Buy => "buy",
+            TradeSide::Sell => "sell",
+        }
+    }
+}
+
+/// One row of the `trades` log: a buy or sell recorded in the app (instead
+/// of editing the wallet CSV), and the cash it moved, if any. The quantity
+/// change itself is a new ledger row written in the same transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeRecord {
+    pub side: TradeSide,
+    pub symbol: String,
+    pub group_name: Option<String>,
+    pub barca: Option<String>,
+    pub asset_class: String,
+    /// The exchange/wallet (ledger `notes`) the trade happened on.
+    pub source: Option<String>,
+    pub quantity: f64,
+    /// Fill price in USD.
+    pub price: f64,
+    pub cash_symbol: Option<String>,
+    pub cash_source: Option<String>,
+    /// Units of the cash asset spent (buy) or received (sell).
+    pub cash_quantity: Option<f64>,
+    pub recorded_by: Option<i64>,
 }
 
 /// A target percent for one position key (the `portfolio_targets` table).

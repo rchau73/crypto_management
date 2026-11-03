@@ -34,6 +34,19 @@ erDiagram
         string created_at
     }
 
+    TRADES {
+        int id PK
+        string side "buy or sell"
+        string symbol
+        string source "exchange = the ledger's notes"
+        float quantity
+        float price "fill price, USD"
+        string cash_symbol "nullable"
+        float cash_quantity "nullable"
+        int recorded_by "user id"
+        string created_at
+    }
+
     ALLOCATIONS {
         int id PK
         string computed_at
@@ -138,6 +151,7 @@ erDiagram
     }
 
     WALLET_ALLOCATIONS }o..|| WALLET_ALLOCATIONS_CURRENT : "aggregated (latest per group)"
+    TRADES ||..|{ WALLET_ALLOCATIONS : "Record trade appends the asset (and cash) rows"
     CRYPTO }o..|| WALLET_ALLOCATIONS_CURRENT : "priced by symbol at request time"
     WALLET_ALLOCATIONS_CURRENT ||..o{ ALLOCATIONS : "computed result persisted as JSON audit"
     HISTORY_TOTALS ||..o{ HISTORY_ASSETS : "same timestamp, one snapshot batch"

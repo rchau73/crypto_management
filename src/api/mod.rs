@@ -15,6 +15,7 @@ use crate::usecases::auth_service::AuthService;
 use crate::usecases::history_service::HistoryService;
 use crate::usecases::portfolio_service::PortfolioService;
 use crate::usecases::targets_service::TargetsService;
+use crate::usecases::trade_service::TradeService;
 use crate::usecases::user_service::UserService;
 use crate::usecases::wallet_export::WalletExportService;
 use crate::usecases::wallet_import::WalletImportService;
@@ -32,6 +33,7 @@ pub struct AppState {
     pub history: Arc<HistoryService>,
     pub portfolios: Arc<PortfolioService>,
     pub targets: Arc<TargetsService>,
+    pub trades: Arc<TradeService>,
     pub wallet_import: Arc<WalletImportService>,
     pub wallet_export: Arc<WalletExportService>,
     pub auth: Arc<AuthService>,
@@ -58,6 +60,7 @@ impl AppState {
             history: Arc::new(HistoryService::new(repo.clone())),
             portfolios: Arc::new(PortfolioService::new(repo.clone())),
             targets: Arc::new(TargetsService::new(repo.clone(), repo.clone())),
+            trades: Arc::new(TradeService::new(repo.clone())),
             wallet_import: Arc::new(WalletImportService::new(repo.clone())),
             wallet_export: Arc::new(WalletExportService::new(repo.clone(), repo.clone())),
             auth: Arc::new(AuthService::new(
@@ -105,6 +108,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/portfolios/{id}/targets/quantity",
             put(portfolio::correct_quantity),
         )
+        .route("/api/portfolios/{id}/sources", get(portfolio::list_sources))
+        .route("/api/portfolios/{id}/trades", post(portfolio::record_trade))
         .route(
             "/api/portfolios/{id}/barca/targets",
             get(portfolio::get_barca_targets).put(portfolio::save_barca_targets),

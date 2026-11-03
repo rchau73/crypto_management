@@ -9,7 +9,8 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, User, WalletPosition,
+    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, TradeRecord, User,
+    WalletPosition,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -74,6 +75,15 @@ pub trait PortfolioRepo: Send + Sync {
         &self,
         portfolio: PortfolioId,
         targets: &[NewPortfolioTarget],
+        new_entries: &[LedgerEntry],
+    ) -> RepoResult<()>;
+
+    /// Logs `trade` and appends the ledger rows it changes (the traded
+    /// source, and the cash source if any), in one transaction.
+    async fn record_trade(
+        &self,
+        portfolio: PortfolioId,
+        trade: &TradeRecord,
         new_entries: &[LedgerEntry],
     ) -> RepoResult<()>;
 }

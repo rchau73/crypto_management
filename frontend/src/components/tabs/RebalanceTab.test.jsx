@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RebalanceTab } from "./RebalanceTab";
 
+vi.mock("../../hooks/useCurrentPortfolio", () => ({ useCurrentPortfolio: () => ({ id: 1, name: "Account A", access: "manage" }) }));
+vi.mock("../../api/client", () => ({ fetchPositionSources: vi.fn(() => new Promise(() => {})), recordTrade: vi.fn() }));
+
 // BARCA.md's crash example: Base below its band, Caixa and RendaPassiva above.
 const positions = [
   ["BTC", "Base", 38000, 50],
@@ -22,7 +25,7 @@ const report = {
   })),
 };
 
-function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn() }) {
+function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn(), canRecord = false }) {
   const [sentiment, setSentiment] = useState(null);
   const [done, setDone] = useState(() => new Set());
   return (
@@ -35,11 +38,14 @@ function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn
       pricesAsOf={pricesAsOf}
       refreshIntervalSecs={300}
       onOpenHoldings={onOpenHoldings}
+      accountName="Account A"
+      canRecord={canRecord}
+      onTradeRecorded={vi.fn()}
     />
   );
 }
 
-const steps = () => within(screen.getByRole("heading", { name: "This round's steps" }).parentElement);
+const steps = () => within(screen.getByRole("region", { name: "This round's steps" }));
 
 describe("RebalanceTab", () => {
   it("shows the bands right away but asks for the sentiment before any step", () => {
@@ -83,5 +89,20 @@ describe("RebalanceTab", () => {
     render(<Harness onOpenHoldings={onOpenHoldings} />);
     await user.click(screen.getByRole("button", { name: "See every asset in Holdings" }));
     expect(onOpenHoldings).toHaveBeenCalled();
+  });
+
+  it("records a step's trade only with manage access, from a pre-filled dialog", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Fear / Extreme fear" }));
+    expect(screen.queryByRole("button", { name: /Record trade/ })).not.toBeInTheDocument();
+    unmount();
+
+    render(<Harness canRecord />);
+    await user.click(screen.getByRole("button", { name: "Fear / Extreme fear" }));
+    await user.click(steps().getByRole("button", { name: "Record trade: Buy BTC" }));
+    const dialog = screen.getByRole("dialog", { name: /Record trade/ });
+    expect(within(dialog).getByText("BTC · Base")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Record buy in Account A" })).toBeInTheDocument();
   });
 });

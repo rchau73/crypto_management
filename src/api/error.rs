@@ -4,6 +4,7 @@
 use crate::usecases::allocations_service::AllocationsError;
 use crate::usecases::portfolio_service::PortfolioError;
 use crate::usecases::targets_service::TargetsError;
+use crate::usecases::trade_service::TradeError;
 use crate::usecases::user_service::UserServiceError;
 use crate::usecases::wallet_import::ImportError;
 use axum::Json;
@@ -81,6 +82,16 @@ impl From<TargetsError> for ApiError {
             TargetsError::Invalid(message) => ApiError::bad_request(message),
             TargetsError::NotFound(message) => ApiError::not_found(message),
             TargetsError::Repo(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<TradeError> for ApiError {
+    fn from(e: TradeError) -> Self {
+        match e {
+            TradeError::Invalid(message) => ApiError::bad_request(message),
+            TradeError::NotFound(message) => ApiError::not_found(message),
+            TradeError::Repo(e) => ApiError::internal(e),
         }
     }
 }
