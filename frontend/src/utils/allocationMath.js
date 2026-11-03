@@ -31,38 +31,21 @@ export function getTotalTargetPercent(rows) {
   }, 0);
 }
 
-// current %, deviation vs. target, $ deviation, and suggested DCA top-up for
-// a single row, given the total value its percentage should be measured
-// against (the whole wallet, or a filtered subset of it).
-export function deriveRowMetrics(row, totalValue) {
-  const targetPercent = row.target_percent || 0;
-  const currentPercent = totalValue > 0 ? (row.value / totalValue) * 100 : 0;
-  const deviation = currentPercent - targetPercent;
-  const targetValue = totalValue * (targetPercent / 100);
-  const valueDeviation = row.value - targetValue;
-  const dca = Math.abs(valueDeviation) * 0.3;
-  return { currentPercent, deviation, valueDeviation, dca };
-}
-
 // BARCA rule 1 (BARCA.md): a row needs action only when its current share is
 // more than 20% *of its own target* away from that target. Relative on
 // purpose: 2 points off is noise for a 50% target but a 20% miss for 10%.
 export const BAND_FRACTION = 0.2;
 
-// "high" = outside the band, "normal" = inside it. A row holding value with
-// no target at all (0%) is outside any band.
-export function bandSeverity(currentPercent, targetPercent) {
+// "below" / "in" / "above" the band. A row holding value with no target
+// at all (0%) is above any band; an empty untargeted row is in it.
+export function bandStatus(currentPercent, targetPercent) {
   const current = Number(currentPercent) || 0;
   const target = Number(targetPercent) || 0;
-  if (target <= 0) return current > 0 ? "high" : "normal";
-  return Math.abs(current - target) > target * BAND_FRACTION ? "high" : "normal";
-}
-
-// $ gap between a row and its target when only its deviation (in percentage
-// points of the whole wallet) is known: those points are of the *total*, not
-// of the row's own value. Positive = above target.
-export function valueGapFromDeviation(deviationPoints, totalValue) {
-  return (totalValue * (Number(deviationPoints) || 0)) / 100;
+  if (target <= 0) return current > 0 ? "above" : "in";
+  const margin = target * BAND_FRACTION;
+  if (current > target + margin) return "above";
+  if (current < target - margin) return "below";
+  return "in";
 }
 
 // Collapse per-asset rows (one per symbol+group+barca) into one row per

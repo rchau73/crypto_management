@@ -49,7 +49,7 @@ There is no PM or PRD here: the user owns the *why* and the decisions; you own *
 
 ## Fit with this repo's frontend
 
-The frontend is React 19 + MUI + Recharts + dayjs (Vite) in `frontend/src/`: `App.jsx` only composes tabs, each tab lives in `components/tabs/`, shared widgets in `components/` (`SortableTableHead`, `StatTiles`, `EmptyState`, `DeviationBadge`, `StatusLine`, `FiltersBar`, `PaginationControls`, `PortfolioSwitcher`…), data in `hooks/`, pure logic in `utils/`.
+The frontend is React 19 + MUI + Recharts + dayjs (Vite) in `frontend/src/`: `App.jsx` only composes pages (side menu `SideNav`, page from the URL hash), each page lives in `components/tabs/`, shared widgets in `components/` (`SortableTableHead`, `SubTabs`, `GlobalSearch`, `PricesAge`, `StatTiles`, `EmptyState`, `DeviationBadge`, `StatusLine`, `PortfolioSwitcher`…), data in `hooks/`, pure logic in `utils/`.
 - Use the theme in `frontend/src/theme.js` (dark surfaces, `primary`/`secondary`, status colours `success`/`warning`/`error` reserved for state, fixed-order categorical palette via `colorForSeries`) and the rules in `frontend/README.md` → "Design system". Don't introduce Tailwind or a second component library.
 - Design with existing components so the developer can build without new infrastructure. Propose a new component only when the existing ones can't do the job, and say so in the handoff.
 - UI/UX material belongs in `frontend/README.md` or the PR, not in the backend docs.

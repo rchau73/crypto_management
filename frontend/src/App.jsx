@@ -1,51 +1,25 @@
 import { useMemo, useState } from "react";
-import { Box, CircularProgress, Container, CssBaseline, LinearProgress, Tab, Tabs } from "@mui/material";
+import { Box, CircularProgress, Container, CssBaseline, Drawer, LinearProgress, useMediaQuery } from "@mui/material";
 import { ThemeProvider } from "@mui/material/styles";
 import { darkTheme } from "./theme";
 import { useAuth } from "./hooks/useAuth";
 import { useAllocations } from "./hooks/useAllocations";
-import { aggregateBySymbol } from "./utils/allocationMath";
+import { useHashRoute } from "./hooks/useHashRoute";
+import { canEdit, resolvePage, visiblePages } from "./utils/navigation";
 import { AppHeader } from "./components/AppHeader";
+import { GlobalSearch } from "./components/GlobalSearch";
+import { SideNav } from "./components/SideNav";
 import { StatTiles } from "./components/StatTiles";
 import { StatusLine } from "./components/StatusLine";
-import { FiltersBar } from "./components/FiltersBar";
 import { EmptyState } from "./components/EmptyState";
 import { LoginPage } from "./components/LoginPage";
-import { PerAssetTab } from "./components/tabs/PerAssetTab";
-import { PerAssetTotalTab } from "./components/tabs/PerAssetTotalTab";
-import { PerGroupTab } from "./components/tabs/PerGroupTab";
-import { BarcaActualTab } from "./components/tabs/BarcaActualTab";
-import { DashboardTab } from "./components/tabs/DashboardTab";
-import { PortfolioTargetsTab } from "./components/tabs/PortfolioTargetsTab";
 import { PortfolioGate } from "./components/PortfolioGate";
-import { BarcaTargetsTab } from "./components/tabs/BarcaTargetsTab";
-import { AdminTab } from "./components/tabs/AdminTab";
-import { AccountsTab } from "./components/tabs/AccountsTab";
+import { HoldingsTab } from "./components/tabs/HoldingsTab";
+import { DashboardTab } from "./components/tabs/DashboardTab";
+import { TargetsTab } from "./components/tabs/TargetsTab";
+import { SettingsTab } from "./components/tabs/SettingsTab";
 
-// Named keys instead of raw tab indices — inserting/reordering a tab (e.g.
-// the Manager-only ones below) can't silently shift which panel a stale
-// numeric literal points at.
-const BASE_TABS = [
-  { key: "per-asset", label: "Per-Asset Table" },
-  { key: "per-asset-total", label: "Per-Asset Total Table" },
-  { key: "per-group", label: "Per-Group Table" },
-  { key: "barca-actual", label: "BARCA Actual Table" },
-  { key: "dashboard", label: "Dashboard" },
-];
-// Tabs that need live allocation data to show anything.
-const DATA_TAB_KEYS = new Set(["per-asset", "per-asset-total", "per-group", "barca-actual"]);
-const MANAGER_TABS = [
-  { key: "portfolio-targets", label: "Portfolio Targets" },
-  { key: "barca-targets", label: "BARCA Targets" },
-];
-// Any manager can create accounts, even one with view-only access to the
-// portfolio on screen (a new account is theirs to manage).
-const ACCOUNT_TABS = [{ key: "accounts", label: "Accounts" }];
-const ADMIN_TABS = [{ key: "admin", label: "Admin" }];
-
-function uniqueSorted(values) {
-  return Array.from(new Set(values)).sort();
-}
+const NAV_WIDTH = 240;
 
 function FullPageSpinner() {
   return (
@@ -56,7 +30,8 @@ function FullPageSpinner() {
 }
 
 // Everything inside one portfolio. PortfolioGate remounts this when the
-// portfolio changes, so its state always belongs to `portfolio`.
+// portfolio changes, so its state always belongs to `portfolio`; the page
+// and its options live in the URL, so they survive that remount.
 function Dashboard({ user, portfolio, onLogout }) {
   const {
     allocations,
@@ -76,57 +51,35 @@ function Dashboard({ user, portfolio, onLogout }) {
     importFromCsv,
     exportToCsv,
   } = useAllocations();
+  const route = useHashRoute();
+  const wide = useMediaQuery(darkTheme.breakpoints.up("md"));
+  const [menuOpen, setMenuOpen] = useState(false);
 
-  const [assetFilter, setAssetFilter] = useState("");
-  const [groupFilter, setGroupFilter] = useState("");
-  const [barcaFilter, setBarcaFilter] = useState("");
-  const [tabIndex, setTabIndex] = useState(0);
-
-  // Editing needs both a manager role and `manage` access to this
-  // portfolio (the server enforces the same rule).
-  const canImport = (user.role === "manager" || user.role === "admin") && portfolio.access === "manage";
-  const isManager = user.role === "manager" || user.role === "admin";
-  const isAdmin = user.role === "admin";
-  const tabs = [
-    ...BASE_TABS,
-    ...(canImport ? MANAGER_TABS : []),
-    ...(isManager ? ACCOUNT_TABS : []),
-    ...(isAdmin ? ADMIN_TABS : []),
-  ];
-  const activeKey = tabs[tabIndex]?.key ?? tabs[0].key;
-
-  const isFiltered = assetFilter !== "" || groupFilter !== "" || barcaFilter !== "";
-  const filterKey = `${assetFilter}|${groupFilter}|${barcaFilter}`;
-
-  const totalWalletValue = allocations.reduce((sum, row) => sum + (typeof row.value === "number" ? row.value : 0), 0);
-
-  const assetOptions = useMemo(() => uniqueSorted(allocations.map((a) => a.symbol)), [allocations]);
-  const groupOptions = useMemo(() => uniqueSorted(allocations.map((a) => a.group)), [allocations]);
-  const barcaOptions = useMemo(() => uniqueSorted(allocations.map((a) => a.barca)), [allocations]);
-
-  const filteredAllocations = useMemo(
-    () =>
-      allocations.filter(
-        (row) =>
-          (assetFilter === "" || row.symbol === assetFilter) &&
-          (groupFilter === "" || row.group === groupFilter) &&
-          (barcaFilter === "" || row.barca === barcaFilter)
-      ),
-    [allocations, assetFilter, groupFilter, barcaFilter]
+  const pages = useMemo(() => visiblePages(user, portfolio), [user, portfolio]);
+  const page = resolvePage(route.page, user, portfolio);
+  const canImport = canEdit(user, portfolio);
+  const report = useMemo(
+    () => ({ allocations, groupAllocations, barcaAllocations, barcaActualAllocations }),
+    [allocations, groupAllocations, barcaAllocations, barcaActualAllocations]
   );
-
-  const filteredTotalValue = filteredAllocations.reduce((sum, row) => sum + (typeof row.value === "number" ? row.value : 0), 0);
-  const relevantTotalValue = isFiltered ? filteredTotalValue : totalWalletValue;
-
-  const symbolAllocations = useMemo(() => aggregateBySymbol(filteredAllocations), [filteredAllocations]);
-
+  const totalWalletValue = allocations.reduce((sum, row) => sum + (typeof row.value === "number" ? row.value : 0), 0);
   const hasData = allocations.length > 0;
+
+  const go = (key, params = {}) => {
+    route.navigate(key, params);
+    setMenuOpen(false);
+  };
+  const setParams = (params, options) => route.navigate(page, params, options);
+  const nav = <SideNav pages={pages} current={page} onNavigate={(key) => go(key)} />;
 
   return (
     <>
       <AppHeader
+        onOpenMenu={wide ? undefined : () => setMenuOpen(true)}
+        search={<GlobalSearch pages={pages} allocations={allocations} onGo={go} />}
         pricesAsOf={pricesAsOf}
         refreshIntervalSecs={refreshIntervalSecs}
+        accountName={portfolio.name}
         importing={importing}
         onImport={importFromCsv}
         exporting={exporting}
@@ -138,69 +91,43 @@ function Dashboard({ user, portfolio, onLogout }) {
       />
       <Box sx={{ height: 3 }}>{loading && <LinearProgress />}</Box>
 
-      <Container maxWidth="xl" sx={{ py: 3 }}>
-        <StatTiles totalWalletValue={totalWalletValue} usdBrl={usdBrl} />
-        <StatusLine pricesAsOf={pricesAsOf} importStatus={importStatus} importError={importError || loadError} />
-
-        {hasData && DATA_TAB_KEYS.has(activeKey) && (
-          <FiltersBar
-            assetFilter={assetFilter}
-            onAssetFilterChange={setAssetFilter}
-            assetOptions={assetOptions}
-            groupFilter={groupFilter}
-            onGroupFilterChange={setGroupFilter}
-            groupOptions={groupOptions}
-            barcaFilter={barcaFilter}
-            onBarcaFilterChange={setBarcaFilter}
-            barcaOptions={barcaOptions}
-          />
+      <Box sx={{ display: "flex", alignItems: "flex-start" }}>
+        {wide ? (
+          <Box
+            component="aside"
+            sx={{ width: NAV_WIDTH, flexShrink: 0, position: "sticky", top: 80, borderRight: 1, borderColor: "divider", minHeight: "60vh" }}
+          >
+            {nav}
+          </Box>
+        ) : (
+          <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} slotProps={{ paper: { sx: { width: NAV_WIDTH } } }}>
+            {nav}
+          </Drawer>
         )}
 
-        <Tabs
-          value={tabIndex}
-          onChange={(_, v) => setTabIndex(v)}
-          variant="scrollable"
-          scrollButtons="auto"
-          allowScrollButtonsMobile
-          sx={{ mb: 2 }}
-        >
-          {tabs.map((t) => (
-            <Tab key={t.key} label={t.label} />
-          ))}
-        </Tabs>
+        <Container component="main" maxWidth="xl" sx={{ py: 3, flex: 1, minWidth: 0 }}>
+          <StatTiles totalWalletValue={totalWalletValue} usdBrl={usdBrl} />
+          <StatusLine pricesAsOf={pricesAsOf} importStatus={importStatus} importError={importError || loadError} />
 
-        {/* Dashboard/Admin/Portfolio Targets/BARCA Targets each have their
-            own independent data source, so they stay reachable for an
-            account with no holdings yet; only the four table tabs need
-            allocations to show anything. Before the first answer the
-            progress bar shows; after a failed load, StatusLine says why. */}
-        {DATA_TAB_KEYS.has(activeKey) && loaded && !hasData && !loadError && (
-          <EmptyState
-            title={`No holdings in ${portfolio.name} yet`}
-            description={
-              canImport
-                ? "Import this account's wallet CSV (Import Wallet CSV above) to see its allocations."
-                : "Its allocations appear here once its manager imports the account's wallet."
-            }
-          />
-        )}
-        {activeKey === "per-asset" && hasData && (
-          <PerAssetTab rows={filteredAllocations} totalValue={relevantTotalValue} isFiltered={isFiltered} filterKey={filterKey} />
-        )}
-        {activeKey === "per-asset-total" && hasData && (
-          <PerAssetTotalTab rows={symbolAllocations} totalValue={relevantTotalValue} isFiltered={isFiltered} filterKey={filterKey} />
-        )}
-        {activeKey === "per-group" && hasData && <PerGroupTab groupAllocations={groupAllocations} />}
-        {activeKey === "barca-actual" && hasData && (
-          <BarcaActualTab barcaAllocations={barcaAllocations} barcaActualAllocations={barcaActualAllocations} />
-        )}
-        {/* Each tab below is only mounted while selected, so it fetches its own data on mount. */}
-        {activeKey === "dashboard" && <DashboardTab />}
-        {canImport && activeKey === "portfolio-targets" && <PortfolioTargetsTab />}
-        {canImport && activeKey === "barca-targets" && <BarcaTargetsTab />}
-        {isManager && activeKey === "accounts" && <AccountsTab />}
-        {isAdmin && activeKey === "admin" && <AdminTab currentUsername={user.username} />}
-      </Container>
+          {/* Before the first answer the progress bar shows; after a failed
+              load, StatusLine says why. History, Targets and Settings have
+              their own data, so they work for an account with no holdings. */}
+          {page === "holdings" && hasData && <HoldingsTab report={report} params={route.params} onParamsChange={setParams} />}
+          {page === "holdings" && loaded && !hasData && !loadError && (
+            <EmptyState
+              title={`No holdings in ${portfolio.name} yet`}
+              description={
+                canImport
+                  ? `Import this account's wallet CSV ("Import CSV into ${portfolio.name}" above) to see its allocations.`
+                  : "Its allocations appear here once its manager imports the account's wallet."
+              }
+            />
+          )}
+          {page === "history" && <DashboardTab />}
+          {page === "targets" && <TargetsTab params={route.params} onParamsChange={setParams} />}
+          {page === "settings" && <SettingsTab user={user} params={route.params} onParamsChange={setParams} />}
+        </Container>
+      </Box>
     </>
   );
 }

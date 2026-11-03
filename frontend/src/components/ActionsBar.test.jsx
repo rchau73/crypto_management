@@ -5,19 +5,19 @@ import { ActionsBar } from "./ActionsBar";
 
 describe("ActionsBar", () => {
   it("hides Import Wallet CSV for a role that can't import", () => {
-    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={false} />);
-    expect(screen.queryByRole("button", { name: "Import Wallet CSV" })).not.toBeInTheDocument();
+    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={false} accountName="Spouse" />);
+    expect(screen.queryByRole("button", { name: "Import CSV into Spouse" })).not.toBeInTheDocument();
   });
 
   it("shows Import Wallet CSV for a role that can import", () => {
-    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={true} />);
-    expect(screen.getByRole("button", { name: "Import Wallet CSV" })).toBeInTheDocument();
+    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={true} accountName="Spouse" />);
+    expect(screen.getByRole("button", { name: "Import CSV into Spouse" })).toBeInTheDocument();
   });
 
   it("calls onImport with the chosen File, not a path string", async () => {
     const user = userEvent.setup();
     const onImport = vi.fn();
-    render(<ActionsBar importing={false} onImport={onImport} canImport={true} />);
+    render(<ActionsBar importing={false} onImport={onImport} canImport={true} accountName="Spouse" />);
 
     const file = new File(["symbol,group\nBTC,Core\n"], "wallet.csv", { type: "text/csv" });
     // The button just opens the native picker; the hidden <input type="file"> is what
@@ -30,7 +30,7 @@ describe("ActionsBar", () => {
 
   it("does not call onImport when the file input is cleared without a selection", () => {
     const onImport = vi.fn();
-    render(<ActionsBar importing={false} onImport={onImport} canImport={true} />);
+    render(<ActionsBar importing={false} onImport={onImport} canImport={true} accountName="Spouse" />);
 
     const fileInput = document.querySelector('input[type="file"]');
     fileInput.dispatchEvent(new Event("change", { bubbles: true }));
@@ -39,12 +39,12 @@ describe("ActionsBar", () => {
   });
 
   it("has no Update Prices button: prices refresh by themselves", () => {
-    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={true} />);
+    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={true} accountName="Spouse" />);
     expect(screen.queryByRole("button", { name: /update prices/i })).not.toBeInTheDocument();
   });
 
   it("hides Export Wallet CSV for a role that can't export", () => {
-    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={false} />);
+    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={false} accountName="Spouse" />);
     expect(screen.queryByRole("button", { name: "Export Wallet CSV" })).not.toBeInTheDocument();
   });
 
@@ -52,7 +52,7 @@ describe("ActionsBar", () => {
     const user = userEvent.setup();
     const onExport = vi.fn();
     render(
-      <ActionsBar importing={false} onImport={vi.fn()} exporting={false} onExport={onExport} canImport={true} />
+      <ActionsBar importing={false} onImport={vi.fn()} exporting={false} onExport={onExport} canImport={true} accountName="Spouse" />
     );
 
     await user.click(screen.getByRole("button", { name: "Export Wallet CSV" }));
@@ -62,14 +62,14 @@ describe("ActionsBar", () => {
 
   it("disables Export Wallet CSV while an export is in flight", () => {
     render(
-      <ActionsBar importing={false} onImport={vi.fn()} exporting={true} onExport={vi.fn()} canImport={true} />
+      <ActionsBar importing={false} onImport={vi.fn()} exporting={true} onExport={vi.fn()} canImport={true} accountName="Spouse" />
     );
     // Import, Export — the export button is the second.
     expect(screen.getAllByRole("button")[1]).toBeDisabled();
   });
 
   it("disables Import Wallet CSV while an import is in flight", () => {
-    render(<ActionsBar importing={true} onImport={vi.fn()} canImport={true} />);
+    render(<ActionsBar importing={true} onImport={vi.fn()} canImport={true} accountName="Spouse" />);
     // Import shows a spinner instead of its label, so find it by position.
     const buttons = screen.getAllByRole("button");
     expect(buttons[0]).toBeDisabled();

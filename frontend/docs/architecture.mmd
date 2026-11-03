@@ -1,6 +1,6 @@
 flowchart TD
     subgraph APP["App.jsx — composition root"]
-        ROOT["Renders LoginPage while logged out,\nDashboard (tab & filter state) once logged in"]
+        ROOT["Renders LoginPage while logged out;\nonce logged in, PortfolioGate → Dashboard:\npage from the URL hash, side menu + page"]
     end
 
     subgraph AUTHUI["Auth UI"]
@@ -8,27 +8,24 @@ flowchart TD
     end
 
     subgraph LAYOUT["Layout components"]
-        HEADER["AppHeader (sticky)\n+ ActionsBar + Log Out"]
+        HEADER["AppHeader (sticky)\nPortfolioSwitcher · GlobalSearch (Ctrl/⌘K)\nPricesAge · ActionsBar · Log Out"]
+        NAV["SideNav\n(column on wide screens, drawer on phones)"]
         STATS["StatTiles"]
         STATUS["StatusLine"]
-        FILTERS["FiltersBar\n(active-filter chips)"]
         EMPTY["EmptyState"]
     end
 
-    subgraph TABS["components/tabs/ — one per Tab"]
-        T0["PerAssetTab"]
-        T1["PerAssetTotalTab"]
-        T2["PerGroupTab"]
-        T3["BarcaActualTab"]
-        T4["DashboardTab"]
-        T5["AdminTab\n(role === admin only)"]
+    subgraph TABS["components/tabs/ — one per page"]
+        T0["HoldingsTab\n(View by position · asset · group · BARCA)"]
+        T1["DashboardTab\n(History)"]
+        T2["TargetsTab → PortfolioTargetsTab,\nBarcaTargetsTab (can edit)"]
+        T3["SettingsTab → AccountsTab,\nAdminTab (admin)"]
     end
 
     subgraph SHARED["Shared UI components"]
         SORTHEAD["SortableTableHead"]
-        PAGI["PaginationControls"]
+        SUBTABS["SubTabs"]
         BADGE["DeviationBadge\n(status dot + text)"]
-        PIE["AllocationPieChart"]
         LINE["HistoryLineChart"]
         TOOLTIP["ChartTooltip"]
         DCTRL["DashboardControls"]
@@ -40,12 +37,14 @@ flowchart TD
         HHIST["useHistoryDashboard"]
         HUSERS["useUsers\n(admin CRUD)"]
         HSORT["useSortableData"]
-        HPAGE["usePagination"]
+        HROUTE["useHashRoute\n(page + params in the URL)"]
     end
 
     subgraph UTILS["utils/ — pure functions (unit tested)"]
-        FMT["formatters.js"]
-        MATH["allocationMath.js"]
+        FMT["formatters.js · time.js"]
+        MATH["allocationMath.js\n(BARCA band)"]
+        HOLD["holdings.js\n(rows per view)"]
+        NAVU["navigation.js · route.js · search.js"]
         BUCKET["historyBucketing.js"]
     end
 
@@ -59,20 +58,19 @@ flowchart TD
     ROOT -->|owns| HAUTH
     ROOT -->|logged out| LOGIN
     ROOT -->|logged in| HEADER
+    ROOT --> NAV
     ROOT --> STATS
     ROOT --> STATUS
-    ROOT --> FILTERS
     ROOT --> EMPTY
-    ROOT --> T0
-    ROOT --> T1
-    ROOT --> T2
-    ROOT --> T3
-    ROOT --> T4
-    ROOT -->|role === admin| T5
+    ROOT -->|page = holdings| T0
+    ROOT -->|page = history| T1
+    ROOT -->|page = targets| T2
+    ROOT -->|page = settings| T3
     ROOT -->|owns| HALLOC
+    ROOT -->|owns| HROUTE
 
     LOGIN -->|calls| HAUTH
-    T5 -->|owns| HUSERS
+    T3 -->|owns| HUSERS
 
     TABS --> SHARED
     TABS --> HOOKS

@@ -16,7 +16,7 @@ Copy `.env.example` to `.env.local` if the backend isn't running on the default 
 
 ## Architecture
 
-`App.jsx` is a thin composition root — it renders `LoginPage` while logged out, or the dashboard (tab/filter state and derived totals) once `useAuth` resolves a session. No business logic lives in a component: table math is in `utils/`, data fetching is in `hooks/`, and styling tokens are in `theme.js`.
+`App.jsx` is a thin composition root — it renders `LoginPage` while logged out, or, once `useAuth` resolves a session, the side menu and the page named in the URL hash (`#/holdings?view=barca`, via `useHashRoute`), so a reload, a bookmark or Back keep your place. No business logic lives in a component: table math is in `utils/`, data fetching is in `hooks/`, and styling tokens are in `theme.js`.
 
 Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 
@@ -26,19 +26,19 @@ Source: [`docs/architecture.mmd`](docs/architecture.mmd)
 
 | Layer | Path | Responsibility |
 |---|---|---|
-| Composition root | `src/App.jsx` | Tab/filter state, derived totals (`filteredAllocations`, `symbolAllocations`), and wiring everything else together. Nothing here renders a table row directly. |
+| Composition root | `src/App.jsx` | Picks the page from the URL (`resolvePage` falls back to Holdings for an unknown or hidden page), lays out the side menu (a drawer on phones) and wires data into pages. Nothing here renders a table row directly. |
 | Auth UI | `src/components/LoginPage.jsx` | Full-page swap shown whenever there's no session — there's no router, so "logged out" is just a different thing `App.jsx` renders. |
-| Layout | `src/components/AppHeader.jsx`, `ActionsBar.jsx`, `StatTiles.jsx`, `StatusLine.jsx`, `FiltersBar.jsx`, `EmptyState.jsx` | The page chrome: sticky header (identity + Log Out), KPI tiles, filter chips, empty/loading affordances. |
-| Tabs | `src/components/tabs/*.jsx` | One component per tab (`PerAssetTab`, `PerAssetTotalTab`, `PerGroupTab`, `BarcaActualTab`, `DashboardTab`, `AdminTab`). Each owns its own table/chart composition and pulls in whichever hooks/utils it needs. `AdminTab` only renders when `role === "admin"`. |
-| Shared UI | `src/components/{SortableTableHead,PaginationControls,DeviationBadge,AllocationPieChart,HistoryLineChart,ChartTooltip,DashboardControls}.jsx` | Reusable pieces used by more than one tab — a generic sortable header, pagination controls, the colored-dot deviation indicator, and the two chart wrappers. |
-| Hooks | `src/hooks/{useAuth,useAllocations,useHistoryDashboard,useUsers,useSortableData,usePagination}.js` | All `useState`/`useEffect`/data-fetching. `useAuth` owns the session (checks it on mount, exposes `login`/`logout`); `useUsers` is `AdminTab`'s CRUD. `useSortableData` and `usePagination` are generic — every table reuses the same two hooks instead of hand-rolling sort/paging logic per table. |
-| Utils | `src/utils/{formatters,allocationMath,historyBucketing}.js` | Pure functions only — no React, no DOM. This is 100% of what's unit-tested (`*.test.js` next to each file). |
+| Layout | `src/components/AppHeader.jsx`, `SideNav.jsx`, `GlobalSearch.jsx`, `PricesAge.jsx`, `ActionsBar.jsx`, `StatTiles.jsx`, `StatusLine.jsx`, `EmptyState.jsx` | The page chrome: sticky header (account switcher, search with Ctrl/⌘K, prices age, import/export naming the account, Log Out), the side menu, KPI tiles, empty/loading affordances. |
+| Pages | `src/components/tabs/*.jsx` | One component per menu entry: `HoldingsTab` (one table, "View by" position / asset / group / BARCA, filter, "only outside band"), `DashboardTab` (History), `TargetsTab` (asset + BARCA targets), `SettingsTab` (Accounts + Users). Which entries a user sees is decided once in `utils/navigation.js`. |
+| Shared UI | `src/components/{SortableTableHead,SubTabs,DeviationBadge,HistoryLineChart,ChartTooltip,DashboardControls}.jsx` | Reusable pieces — a generic sortable header, page sub-tabs, the colored-dot deviation indicator, and the chart wrappers. |
+| Hooks | `src/hooks/{useAuth,useAllocations,useHashRoute,useHistoryDashboard,useUsers,useSortableData}.js` | All `useState`/`useEffect`/data-fetching. `useAuth` owns the session; `useAllocations` polls the live allocations; `useHashRoute` keeps the page and its options in the URL; `useUsers` is `AdminTab`'s CRUD. |
+| Utils | `src/utils/{formatters,time,allocationMath,holdings,navigation,route,search,pricesAge,historyBucketing}.js` | Pure functions only — no React, no DOM: the BARCA band rule, Holdings rows per view (with the DCA step's direction), who sees which page, URL parsing, search matching. Unit-tested next to each file. |
 | API | `src/api/client.js` | The only place that calls `fetch()`. Every call sets `credentials: "include"` (so the session cookie is sent) and transparently retries once via `/api/auth/refresh` on a 401. `VITE_API_BASE_URL` (see `.env.example`) points it at the backend. |
 | Theme | `src/theme.js` | The dark MUI theme, the fixed 8-color categorical palette, and `colorForSeries()` — see [Design system](#design-system) below. |
 
 ### Testing
 
-Vitest + React Testing Library. Pure logic in `utils/`, `theme.js`'s `colorForSeries`, and all six hooks (including `useAuth` and `useUsers`, with the backend mocked) have direct unit tests; `PaginationControls`, `LoginPage`, and `AdminTab` have component tests exercising real interaction (typing, clicking, confirming a delete). Run with `npm run test`. There's no end-to-end browser test — the golden path and edge cases (login, role-gated UI, filters, sorting, pagination, CSV import, all 6 tabs, both chart types) are verified manually against a running backend before every change of this size.
+Vitest + React Testing Library. Pure logic in `utils/`, `theme.js`'s `colorForSeries`, and the hooks (including `useAuth`, `useAllocations` polling and `useHashRoute`, with the backend mocked) have direct unit tests; `HoldingsTab`, `GlobalSearch`, `SideNav`, `SettingsTab`, `LoginPage`, `AdminTab` and others have component tests exercising real interaction (typing, clicking, confirming a delete). Run with `npm run test`. There's no end-to-end browser test — the golden path and edge cases (login, role-gated menu, search, Holdings views and filters, sorting, CSV import, every page) are verified manually against a running backend before every change of this size.
 
 ---
 

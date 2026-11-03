@@ -34,11 +34,9 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 ## Features
 
 - **Live Price Updates:** Fetches current prices and wallet values from CoinMarketCap.
-- **Per-Asset Table:** View all assets with filters for Asset, Group, and BARCA. Includes pagination.
-- **Per-Group Table:** See group allocations with current value ($), percent, deviation, and value deviation.
-- **BARCA Actual Table:** View actual allocation per BARCA group.
-- **Pie Charts:** Visualize allocations by Group and BARCA (target and actual) with readable labels.
-- **Tabs:** Switch between tables and charts using tabs.
+- **Holdings:** one table of every holding against its target, viewed by position, asset, group or BARCA, with the ±20% band status and each row's next DCA step ("Buy $…" / "Sell $…"). Filter by name, group or BARCA, or show only rows outside their band.
+- **Find anything:** the header search (Ctrl/⌘K) jumps to an asset, BARCA, group or page.
+- **Side menu:** Holdings, History, Targets, Settings; the URL keeps the page and view, so reload and Back work.
 - **Responsive UI:** Built with Material UI and Recharts, with dark mode enabled.
 
 ---
@@ -247,17 +245,17 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
 With both the backend and frontend running and you logged in:
 
 - Prices load as soon as you open an account and stay current by themselves; the header shows their age ("Prices from 4 min ago", amber when older than two refresh intervals). The app asks the backend every 10 seconds, but that only reads the database: the backend calls the price APIs (CoinMarketCap for the crypto you hold, brapi/Finnhub for `br-equities`/`us-indices`, the Banco Central for USD/BRL) only when its shared prices are older than `PRICE_REFRESH_MINUTES` (default 5), or when an account holds a symbol they don't cover yet. Nothing runs while the app is closed. CoinMarketCap's free plan has 10,000 credits a month and a refresh costs 1 credit per 100 symbols, so the default stays within it even with the app open all day. If a refresh fails, the previous prices stay on screen (with their age) and the APIs are retried after a minute.
-- **Per-Asset / Per-Asset Total / Per-Group / BARCA Actual** tabs show the computed breakdown, with deviation from target highlighted.
-- The **Dashboard** tab plots the persisted history (every price refresh appends a snapshot for each account).
-- **Portfolio Targets** and **BARCA Targets** tabs (Manager+) are where you actually manage your portfolio day to day — see the next section. `wallet_allocations.csv` is only a one-time seed, not something you keep editing.
-- **Admin** tab (Admin only) manages user accounts (create, change role, reset password, delete).
+- **Holdings** shows the computed breakdown ("View by" position, asset, group or BARCA), with each row's band status and DCA step.
+- **History** plots the persisted history (every price refresh appends a snapshot for each account).
+- **Targets** (Manager+ with edit access to the account) has the **Asset targets** and **BARCA targets** tabs, where you actually manage your portfolio day to day — see the next section. `wallet_allocations.csv` is only a one-time seed, not something you keep editing.
+- **Settings** has **Accounts** (Manager+) and **Users** (Admin only: create, change role, reset password, delete).
 
 ### Editable portfolio and BARCA targets
 
 Once you have data, the DB — not the CSV — is authoritative:
 
-- **Portfolio Targets** tab: one editable row per asset (symbol, group, BARCA, asset class, target %). Quantity/notes are read-only here (they come from CSV import / ledger history, to avoid a whole class of double-counting bugs from mixing "edit a target" with "edit a ledger") — add a brand-new asset via **+ Add Asset** to give it a starting quantity. The BARCA/Group columns suggest existing values (to avoid typos) but accept a new one too.
-- **BARCA Targets** tab: one editable row per BARCA bucket (e.g. "Base", "Altcoins", or a new one like "IBOVE") for the market profile selected in the dropdown (`BullMarket`/`BearMarket`, matching `CURRENT_MARKET`). A bucket only applies to the market it's saved under — add it to both if it should always be active.
+- **Targets → Asset targets**: one editable row per asset (symbol, group, BARCA, asset class, target %). Quantity/notes are read-only here (they come from CSV import / ledger history, to avoid a whole class of double-counting bugs from mixing "edit a target" with "edit a ledger") — add a brand-new asset via **+ Add Asset** to give it a starting quantity. The BARCA/Group columns suggest existing values (to avoid typos) but accept a new one too.
+- **Targets → BARCA targets**: one editable row per BARCA bucket (e.g. "Base", "Altcoins", or a new one like "IBOVE") for the market profile selected in the dropdown (`BullMarket`/`BearMarket`, matching `CURRENT_MARKET`). A bucket only applies to the market it's saved under — add it to both if it should always be active.
 - Both tabs share the same pattern: edit the table, a single **Save All** button submits the whole set atomically, and target percentages across the set must sum to exactly 100% or the save is rejected client- and server-side.
 - Re-importing the CSV (manually, or the automatic empty-DB seed) never overwrites an existing target — the CSV target is only used for brand-new positions. Quantities, on the other hand, come from the CSV (see below).
 
@@ -301,7 +299,7 @@ sqlite3 ./data/crypto.db "SELECT * FROM wallet_allocations_current;"
 
 - The frontend uses Material UI with a dark theme.  
   You can further customize the look in `frontend/src/theme.js`.
-- Your portfolio lives in the DB (`portfolio_targets` + `wallet_allocations`), edited via the **Portfolio Targets**/**BARCA Targets** tabs — see [Editable portfolio and BARCA targets](#editable-portfolio-and-barca-targets). `wallet_allocations.csv` is only a one-time seed for brand-new assets.
+- Your portfolio lives in the DB (`portfolio_targets` + `wallet_allocations`), edited on the **Targets** page — see [Editable portfolio and BARCA targets](#editable-portfolio-and-barca-targets). `wallet_allocations.csv` is only a one-time seed for brand-new assets.
 
 ---
 

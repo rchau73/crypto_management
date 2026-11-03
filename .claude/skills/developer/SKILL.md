@@ -27,7 +27,7 @@ Clean architecture (ports and adapters), dependencies pointing inwards:
 - `src/api/` — `build_router()` (used by `main` **and** `src/tests/integration.rs`), `AppState` (services built once), thin handlers, and `error.rs` (`ApiError`; `From<ServiceError>` impls decide status codes, so handlers just use `?`).
 - `src/config.rs` + `src/main.rs` — composition root: read `AppConfig` once, wire adapters, seed first-run data, serve.
 - `src/bin/` — CLI tools built on the library (`src/lib.rs`), e.g. `import_wallet_allocations` reuses `WalletImportService`. New scripts go here and reuse services instead of re-implementing logic.
-- `frontend/` — React 19 + MUI + Recharts + dayjs (Vite, Vitest). `App.jsx` only composes tabs; each tab lives in `components/tabs/`, data-fetching in `hooks/`, pure logic in `utils/` (with tests). Tabs are mounted only while visible and fetch on mount.
+- `frontend/` — React 19 + MUI + Recharts + dayjs (Vite, Vitest). `App.jsx` only composes pages (side menu, page from the URL hash); each page lives in `components/tabs/`, data-fetching in `hooks/`, pure logic in `utils/` (with tests). Tabs are mounted only while visible and fetch on mount.
 
 **Guard rails — keep these true:**
 - Handlers never touch a repo directly; they call one service.

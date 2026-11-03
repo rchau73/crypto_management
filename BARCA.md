@@ -205,12 +205,12 @@ greed lasts. The refilled Caixa is the dry powder for the next fear phase.
 
 | Model concept | Where it is in the app |
 |---|---|
-| BARCA targets per market profile | **BARCA Targets** tab (Manager), `CURRENT_MARKET` in `.env` |
-| Asset targets inside each BARCA | **Portfolio Targets** tab (Manager) |
-| Current % vs. target per BARCA | **BARCA Actual** tab (tables and pie charts) |
-| Deviation per asset and group, with color | **Per-Asset** and **Per-Group** tabs: red (with a dot) = outside its ±20% band (rule 1), or holding value with no target |
-| Suggested DCA step | **DCA** column in the Per-Asset tabs (30% of the $ gap) |
-| Drift over time | **Dashboard** tab (history per BARCA, group, asset or total) |
+| BARCA targets per market profile | **Targets → BARCA targets** (Manager), `CURRENT_MARKET` in `.env` |
+| Asset targets inside each BARCA | **Targets → Asset targets** (Manager) |
+| Current % vs. target per BARCA | **Holdings**, View by BARCA (band status per bucket) |
+| Deviation per asset and group, with color | **Holdings** (any view): "Above band" / "Below band" in red with a dot = outside its ±20% band (rule 1), or holding value with no target; "Only outside band" lists just those |
+| Suggested DCA step | **DCA step** column in Holdings: "Buy $…" below target, "Sell $…" above (30% of the $ gap; dimmed while in band) |
+| Drift over time | **History** (per BARCA, group, asset or total) |
 | A new round | Prices refresh by themselves every few minutes while the app is open (`PRICE_REFRESH_MINUTES`); each refresh records a history snapshot |
 
 **What stays human, on purpose:** the app does not read the Fear & Greed
