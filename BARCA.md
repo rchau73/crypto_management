@@ -209,7 +209,7 @@ greed lasts. The refilled Caixa is the dry powder for the next fear phase.
 | BARCA targets per market profile | **Targets → BARCA targets** (Manager), `CURRENT_MARKET` in `.env` |
 | Asset targets inside each BARCA | **Targets → Asset targets** (Manager) |
 | Current % vs. target per BARCA | **Holdings**, View by BARCA (band status per bucket) |
-| Deviation per asset and group, with color | **Holdings** (any view): "Above band" / "Below band" in red with a dot = outside its ±20% band (rule 1), or holding value with no target; "Only outside band" lists just those |
+| Deviation per asset and group, with color | **Holdings** (any view): "Above band" (green) / "Below band" (red), with a dot and the words = outside its ±20% band (rule 1); value held with no target counts as above; "Only outside band" lists just those |
 | Suggested DCA step | **DCA step** column in Holdings: "Buy $…" below target, "Sell $…" above (30% of the $ gap; dimmed while in band) |
 | Drift over time | **History** (per BARCA, group, asset or total) |
 | A new round | Prices refresh by themselves every few minutes while the app is open (`PRICE_REFRESH_MINUTES`); each refresh records a history snapshot |

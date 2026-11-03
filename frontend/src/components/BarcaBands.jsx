@@ -1,6 +1,6 @@
 import { Box, Paper, Stack, Typography } from "@mui/material";
 import { formatNumber } from "../utils/formatters";
-import { STATUS_COLORS } from "../theme";
+import { BAND_COLORS } from "../theme";
 
 const STATUS_LABEL = { above: "Above band", below: "Below band", in: "In band" };
 
@@ -21,7 +21,6 @@ function signedMoney(n) {
 function BandBar({ row }) {
   const hasTarget = row.targetPercent > 0;
   const position = hasTarget ? Math.min(100, Math.max(0, (row.currentPercent / (2 * row.targetPercent)) * 100)) : 100;
-  const off = row.status !== "in";
   return (
     <Box
       role="img"
@@ -45,7 +44,7 @@ function BandBar({ row }) {
           borderRadius: "50%",
           border: "2px solid",
           borderColor: "background.default",
-          bgcolor: off ? STATUS_COLORS.critical : "text.primary",
+          bgcolor: BAND_COLORS[row.status] ?? "text.primary",
           "@media (prefers-reduced-motion: no-preference)": { transition: "left .3s ease" },
         }}
       />
@@ -77,7 +76,7 @@ export function BarcaBands({ rows }) {
               </Stack>
               <BandBar row={row} />
               <Stack direction="row" useFlexGap sx={{ justifyContent: "space-between", flexWrap: "wrap", gap: 1, mt: 0.75 }}>
-                <Typography variant="body2" sx={{ fontWeight: off ? 700 : 400, color: off ? STATUS_COLORS.critical : "text.secondary" }}>
+                <Typography variant="body2" sx={{ fontWeight: off ? 700 : 400, color: BAND_COLORS[row.status] ?? "text.secondary" }}>
                   {off ? "● " : ""}
                   {STATUS_LABEL[row.status]} ({signedPoints(row.deviation)})
                 </Typography>

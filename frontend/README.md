@@ -61,6 +61,6 @@ The UI follows a validated dark-theme palette rather than MUI's stock `mode: "da
 - **Known trade-off**: the fixed palette has 8 hues. With ~30 possible assets, an arbitrary 5-series default (see below) can occasionally repeat a color. This is an accepted limit of a fixed categorical palette, not a bug — narrow the Dashboard's Series picker to avoid it when it matters.
 - **The Dashboard's "Assets"/"BARCA"/"Groups" levels default to the top 5 series by value**, not every series — a line chart with 30 overlapping series is unreadable regardless of color choice; the multi-select still allows picking any subset.
 - Numeric table columns use `font-variant-numeric: tabular-nums` so digits align vertically down a column.
-- **Deviation color follows BARCA rule 1**: `bandSeverity()` marks a row red only when it is more than 20% of its own target away from it (or holds value with no target), the same band BARCA.md uses for acting.
+- **Band colors follow BARCA rule 1**: `bandStatus()` says whether a row is more than 20% of its own target above it (green, `BAND_COLORS.above`) or below it (red, `BAND_COLORS.below`); in band has no color. Value held with no target counts as above. The shades are lighter than `STATUS_COLORS` so small text passes WCAG AA on the dark cards.
 - Times are always shown in BRT (`utils/time.js`), converted from the API's UTC timestamps — never by subtracting hours from a local time.
 - A deviation reading is never color-only: `DeviationBadge` always pairs the color with a visible dot and the text itself, for colorblind-safe reading.
