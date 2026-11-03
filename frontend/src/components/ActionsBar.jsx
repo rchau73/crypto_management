@@ -1,8 +1,10 @@
 import { useRef } from "react";
 import { Button, CircularProgress, Stack } from "@mui/material";
 
-// "Import Wallet CSV" / "Export Wallet CSV" (prices refresh by themselves,
-// so there is no Update Prices button any more). Export
+// "Import CSV into <account>" / "Export Wallet CSV" (prices refresh by
+// themselves, so there is no Update Prices button any more). Import names
+// the account it writes to, so a relative's file can't land in the wrong
+// wallet unnoticed. Export
 // downloads the wallet in the same format Import reads, for reports outside
 // the app. Status text (last update, import result) lives in StatusLine, not
 // here, so this stays a plain toolbar-friendly button row. Importing a CSV
@@ -15,7 +17,7 @@ import { Button, CircularProgress, Stack } from "@mui/material";
 // picks one, and the file's actual bytes are uploaded — no assumption that
 // the backend can read a path from its own filesystem, which doesn't hold
 // once the backend is a container/serverless deploy you can't shell into.
-export function ActionsBar({ importing, onImport, exporting, onExport, canImport }) {
+export function ActionsBar({ accountName, importing, onImport, exporting, onExport, canImport }) {
   const fileInputRef = useRef(null);
 
   const handleFileChosen = (e) => {
@@ -30,7 +32,7 @@ export function ActionsBar({ importing, onImport, exporting, onExport, canImport
     <Stack direction="row" spacing={1.5}>
       <input ref={fileInputRef} type="file" accept=".csv,text/csv" hidden onChange={handleFileChosen} />
       <Button variant="outlined" color="secondary" onClick={() => fileInputRef.current?.click()} disabled={importing}>
-        {importing ? <CircularProgress size={20} color="inherit" /> : "Import Wallet CSV"}
+        {importing ? <CircularProgress size={20} color="inherit" /> : `Import CSV into ${accountName}`}
       </Button>
       <Button variant="outlined" color="secondary" onClick={onExport} disabled={exporting}>
         {exporting ? <CircularProgress size={20} color="inherit" /> : "Export Wallet CSV"}

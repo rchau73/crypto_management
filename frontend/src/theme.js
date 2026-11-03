@@ -29,6 +29,8 @@ export const darkTheme = createTheme({
   },
   components: {
     MuiButton: { styleOverrides: { root: { textTransform: "none", fontWeight: 600 } } },
+    MuiToggleButton: { styleOverrides: { root: { textTransform: "none", fontWeight: 600 } } },
+    MuiTab: { styleOverrides: { root: { textTransform: "none", fontWeight: 600 } } },
     MuiPaper: { styleOverrides: { root: { backgroundImage: "none" } } },
     MuiAppBar: { styleOverrides: { root: { backgroundImage: "none" } } },
   },

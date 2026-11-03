@@ -3,14 +3,14 @@ import { DashboardControls } from "../DashboardControls";
 import { HistoryLineChart } from "../HistoryLineChart";
 import { useHistoryDashboard } from "../../hooks/useHistoryDashboard";
 
-// Historical dashboard. Fetches when the tab mounts.
+// History: the account's value over time. Fetches when the page mounts.
 export function DashboardTab() {
   const dashboard = useHistoryDashboard();
 
   return (
     <Box>
-      <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
-        Historical Dashboard
+      <Typography variant="h5" component="h1" sx={{ fontWeight: 700, mb: 2 }}>
+        History
       </Typography>
       <DashboardControls
         level={dashboard.level}
