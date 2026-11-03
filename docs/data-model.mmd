@@ -47,6 +47,17 @@ erDiagram
         string created_at
     }
 
+    TRANSFERS {
+        int id PK
+        string symbol
+        string from_barca "plus from_group_name, from_source"
+        string to_barca "plus to_group_name, to_source"
+        float quantity_sent
+        float quantity_received "lower than sent = fee"
+        int recorded_by "user id"
+        string created_at
+    }
+
     ALLOCATIONS {
         int id PK
         string computed_at
@@ -152,6 +163,7 @@ erDiagram
 
     WALLET_ALLOCATIONS }o..|| WALLET_ALLOCATIONS_CURRENT : "aggregated (latest per group)"
     TRADES ||..|{ WALLET_ALLOCATIONS : "Record trade appends the asset (and cash) rows"
+    TRANSFERS ||..|{ WALLET_ALLOCATIONS : "Move balance appends the origin and destination rows"
     CRYPTO }o..|| WALLET_ALLOCATIONS_CURRENT : "priced by symbol at request time"
     WALLET_ALLOCATIONS_CURRENT ||..o{ ALLOCATIONS : "computed result persisted as JSON audit"
     HISTORY_TOTALS ||..o{ HISTORY_ASSETS : "same timestamp, one snapshot batch"

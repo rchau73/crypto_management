@@ -208,6 +208,13 @@ export async function recordTrade(portfolioId, trade) {
   return parseJsonOrThrow(res, "Failed to record the trade");
 }
 
+// Moves a quantity to another BARCA/group and/or exchange, with no trade.
+// Returns { from_quantity, to_quantity, new_position }.
+export async function recordTransfer(portfolioId, transfer) {
+  const res = await postJson(portfolioPath(portfolioId, "/transfers"), transfer);
+  return parseJsonOrThrow(res, "Failed to move the balance");
+}
+
 export async function fetchBarcaTargets(portfolioId, market) {
   const res = await apiFetch(portfolioPath(portfolioId, `/barca/targets?market=${encodeURIComponent(market)}`));
   return parseJsonOrThrow(res, "Failed to fetch BARCA targets");

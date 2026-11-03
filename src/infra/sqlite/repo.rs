@@ -7,8 +7,8 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, TradeRecord, User,
-    WalletPosition,
+    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, TradeRecord, TransferRecord,
+    User, WalletPosition,
 };
 use crate::domain::repository::{
     BarcaTargetRepo, NewUser, PortfolioDirectoryRepo, PortfolioRepo, RefreshTokenRepo, RepoError,
@@ -214,6 +214,38 @@ impl PortfolioRepo for SqliteRepo {
         .bind(&trade.cash_source)
         .bind(trade.cash_quantity)
         .bind(trade.recorded_by)
+        .execute(&mut *tx)
+        .await?;
+        insert_ledger_entries(&mut tx, portfolio, new_entries).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn record_transfer(
+        &self,
+        portfolio: PortfolioId,
+        transfer: &TransferRecord,
+        new_entries: &[LedgerEntry],
+    ) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO transfers \
+             (portfolio_id, symbol, asset_class, from_group_name, from_barca, from_source, \
+              to_group_name, to_barca, to_source, quantity_sent, quantity_received, recorded_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )
+        .bind(portfolio)
+        .bind(&transfer.symbol)
+        .bind(&transfer.asset_class)
+        .bind(&transfer.from_group_name)
+        .bind(&transfer.from_barca)
+        .bind(&transfer.from_source)
+        .bind(&transfer.to_group_name)
+        .bind(&transfer.to_barca)
+        .bind(&transfer.to_source)
+        .bind(transfer.quantity_sent)
+        .bind(transfer.quantity_received)
+        .bind(transfer.recorded_by)
         .execute(&mut *tx)
         .await?;
         insert_ledger_entries(&mut tx, portfolio, new_entries).await?;

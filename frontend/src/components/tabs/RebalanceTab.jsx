@@ -4,6 +4,7 @@ import { SentimentPicker } from "../SentimentPicker";
 import { BarcaBands } from "../BarcaBands";
 import { RoundSteps } from "../RoundSteps";
 import { RecordTradeDialog } from "../RecordTradeDialog";
+import { MoveBalanceDialog } from "../MoveBalanceDialog";
 import { planRound } from "../../utils/rebalance";
 import { describePricesAge } from "../../utils/pricesAge";
 
@@ -12,7 +13,8 @@ import { describePricesAge } from "../../utils/pricesAge";
 // every visit), and the round's buy/sell steps with the reason for any
 // bucket that waits. `sentiment` and `done` live in App, so they last for
 // this visit and account only. With `canRecord`, a trade made on an
-// exchange is recorded here (RecordTradeDialog) instead of through a CSV.
+// exchange is recorded here (RecordTradeDialog) and a balance moved to
+// another BARCA or exchange (MoveBalanceDialog), instead of through a CSV.
 export function RebalanceTab({
   report,
   sentiment,
@@ -30,12 +32,18 @@ export function RebalanceTab({
   const { label: pricesLabel, stale } = describePricesAge(pricesAsOf, refreshIntervalSecs);
   // undefined = closed; null = open for any position; a step = pre-filled.
   const [recording, setRecording] = useState(undefined);
+  const [moving, setMoving] = useState(false);
   const [notice, setNotice] = useState("");
 
   const recorded = ({ stepId, message }) => {
     setRecording(undefined);
     setNotice(message);
     if (stepId && !done.has(stepId)) onToggleDone(stepId);
+    onTradeRecorded();
+  };
+  const moved = ({ message }) => {
+    setMoving(false);
+    setNotice(message);
     onTradeRecorded();
   };
 
@@ -75,6 +83,7 @@ export function RebalanceTab({
             done={done}
             onToggle={onToggleDone}
             onRecord={canRecord ? (step) => setRecording(step) : undefined}
+            onMove={canRecord ? () => setMoving(true) : undefined}
           />
         </Box>
       </Stack>
@@ -96,6 +105,7 @@ export function RebalanceTab({
           onRecorded={recorded}
         />
       )}
+      {moving && <MoveBalanceDialog report={report} accountName={accountName} onClose={() => setMoving(false)} onMoved={moved} />}
     </Box>
   );
 }

@@ -6,8 +6,9 @@ import { CASH_BARCA } from "../utils/rebalance";
 // only tracks progress while you place the orders elsewhere — the app
 // never trades. `done` is a set of step ids kept for this visit only.
 // With `onRecord` (manage access), each step can also record the trade
-// you made, which updates the wallet and ticks the step.
-export function RoundSteps({ plan, sentiment, done, onToggle, onRecord }) {
+// you made, which updates the wallet and ticks the step, and `onMove`
+// opens "Move balance" (another BARCA and/or exchange, no trade).
+export function RoundSteps({ plan, sentiment, done, onToggle, onRecord, onMove }) {
   return (
     <Paper variant="outlined" component="section" aria-labelledby="round-steps-title" sx={{ p: 2 }}>
       <Stack direction="row" sx={{ alignItems: "baseline", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
@@ -15,9 +16,16 @@ export function RoundSteps({ plan, sentiment, done, onToggle, onRecord }) {
           This round's steps
         </Typography>
         {onRecord && (
-          <Button size="small" onClick={() => onRecord(null)}>
-            Record a trade
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button size="small" onClick={() => onRecord(null)}>
+              Record a trade
+            </Button>
+            {onMove && (
+              <Button size="small" onClick={onMove}>
+                Move balance
+              </Button>
+            )}
+          </Stack>
         )}
       </Stack>
       <Typography variant="body2" sx={{ color: "text.secondary", mb: 2 }}>

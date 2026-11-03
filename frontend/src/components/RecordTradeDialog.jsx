@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -17,7 +17,8 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { fetchPositionSources, recordTrade } from "../api/client";
+import { recordTrade } from "../api/client";
+import { usePositionSources } from "../hooks/usePositionSources";
 import { useCurrentPortfolio } from "../hooks/useCurrentPortfolio";
 import { formatNumber } from "../utils/formatters";
 import {
@@ -34,23 +35,6 @@ import {
   sourceLabel,
   tradablePositions,
 } from "../utils/trade";
-
-// The exchanges of every position, loaded each time the dialog opens so
-// the quantities shown are the latest ones.
-function usePositionSources() {
-  const { id: portfolioId } = useCurrentPortfolio();
-  const [state, setState] = useState({ sources: null, error: "" });
-  useEffect(() => {
-    let live = true;
-    fetchPositionSources(portfolioId)
-      .then((sources) => live && setState({ sources, error: "" }))
-      .catch((err) => live && setState({ sources: [], error: err.message }));
-    return () => {
-      live = false;
-    };
-  }, [portfolioId]);
-  return state;
-}
 
 // "Record trade": a buy or sell already made on an exchange, written into
 // this account's wallet (no CSV round trip). `preset` comes from a round

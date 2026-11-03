@@ -183,6 +183,24 @@ pub struct TradeRecord {
     pub recorded_by: Option<i64>,
 }
 
+/// One row of the `transfers` log: a quantity moved from one source (BARCA,
+/// group, exchange) to another of the same asset. No price: the value only
+/// changes place. `quantity_sent - quantity_received` is the fee, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransferRecord {
+    pub symbol: String,
+    pub asset_class: String,
+    pub from_group_name: Option<String>,
+    pub from_barca: Option<String>,
+    pub from_source: Option<String>,
+    pub to_group_name: Option<String>,
+    pub to_barca: Option<String>,
+    pub to_source: Option<String>,
+    pub quantity_sent: f64,
+    pub quantity_received: f64,
+    pub recorded_by: Option<i64>,
+}
+
 /// A target percent for one position key (the `portfolio_targets` table).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewPortfolioTarget {
