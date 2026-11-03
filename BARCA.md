@@ -205,6 +205,7 @@ greed lasts. The refilled Caixa is the dry powder for the next fear phase.
 
 | Model concept | Where it is in the app |
 |---|---|
+| Which BARCA is out of band, and this round's steps | **Rebalance** page: a bar per BARCA against its band; pick the sentiment and it lists the buys/sells (rule 2, Base first, fear spends only Caixa's surplus), and why any out-of-band bucket waits |
 | BARCA targets per market profile | **Targets → BARCA targets** (Manager), `CURRENT_MARKET` in `.env` |
 | Asset targets inside each BARCA | **Targets → Asset targets** (Manager) |
 | Current % vs. target per BARCA | **Holdings**, View by BARCA (band status per bucket) |
@@ -214,6 +215,7 @@ greed lasts. The refilled Caixa is the dry powder for the next fear phase.
 | A new round | Prices refresh by themselves every few minutes while the app is open (`PRICE_REFRESH_MINUTES`); each refresh records a history snapshot |
 
 **What stays human, on purpose:** the app does not read the Fear & Greed
-index or the macro data, and it never trades. It shows *where* the wallet is
+index or the macro data, and it never trades. The Rebalance page asks for
+the sentiment on every visit and account switch instead of remembering it. It shows *where* the wallet is
 out of balance and *how much* one step is. Reading the context and placing
 the orders remain the owner's decisions.

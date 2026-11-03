@@ -14,6 +14,7 @@ import { StatusLine } from "./components/StatusLine";
 import { EmptyState } from "./components/EmptyState";
 import { LoginPage } from "./components/LoginPage";
 import { PortfolioGate } from "./components/PortfolioGate";
+import { RebalanceTab } from "./components/tabs/RebalanceTab";
 import { HoldingsTab } from "./components/tabs/HoldingsTab";
 import { DashboardTab } from "./components/tabs/DashboardTab";
 import { TargetsTab } from "./components/tabs/TargetsTab";
@@ -54,6 +55,18 @@ function Dashboard({ user, portfolio, onLogout }) {
   const route = useHashRoute();
   const wide = useMediaQuery(darkTheme.breakpoints.up("md"));
   const [menuOpen, setMenuOpen] = useState(false);
+  // Today's market sentiment and the steps ticked off, for this visit and
+  // account only: PortfolioGate remounts this component on an account
+  // switch and a reload starts over, so the sentiment is asked again.
+  const [sentiment, setSentiment] = useState(null);
+  const [doneSteps, setDoneSteps] = useState(() => new Set());
+  const toggleStep = (id) =>
+    setDoneSteps((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const pages = useMemo(() => visiblePages(user, portfolio), [user, portfolio]);
   const page = resolvePage(route.page, user, portfolio);
@@ -112,8 +125,20 @@ function Dashboard({ user, portfolio, onLogout }) {
           {/* Before the first answer the progress bar shows; after a failed
               load, StatusLine says why. History, Targets and Settings have
               their own data, so they work for an account with no holdings. */}
+          {page === "rebalance" && hasData && (
+            <RebalanceTab
+              report={report}
+              sentiment={sentiment}
+              onSentimentChange={setSentiment}
+              done={doneSteps}
+              onToggleDone={toggleStep}
+              pricesAsOf={pricesAsOf}
+              refreshIntervalSecs={refreshIntervalSecs}
+              onOpenHoldings={() => go("holdings", { out: "1" })}
+            />
+          )}
           {page === "holdings" && hasData && <HoldingsTab report={report} params={route.params} onParamsChange={setParams} />}
-          {page === "holdings" && loaded && !hasData && !loadError && (
+          {(page === "rebalance" || page === "holdings") && loaded && !hasData && !loadError && (
             <EmptyState
               title={`No holdings in ${portfolio.name} yet`}
               description={

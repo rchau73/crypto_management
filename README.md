@@ -34,9 +34,10 @@ A full-stack Rust + React dashboard for managing and visualizing your crypto wal
 ## Features
 
 - **Live Price Updates:** Fetches current prices and wallet values from CoinMarketCap.
+- **Rebalance (start page):** where each BARCA bucket stands against its ±20% band, a "market sentiment today" question (asked on every visit and account switch), and this round's buy/sell steps following BARCA.md's rules, with the reason for any bucket that waits. Tick steps off as you place the orders elsewhere.
 - **Holdings:** one table of every holding against its target, viewed by position, asset, group or BARCA, with the ±20% band status and each row's next DCA step ("Buy $…" / "Sell $…"). Filter by name, group or BARCA, or show only rows outside their band.
 - **Find anything:** the header search (Ctrl/⌘K) jumps to an asset, BARCA, group or page.
-- **Side menu:** Holdings, History, Targets, Settings; the URL keeps the page and view, so reload and Back work.
+- **Side menu:** Rebalance, Holdings, History, Targets, Settings; the URL keeps the page and view, so reload and Back work.
 - **Responsive UI:** Built with Material UI and Recharts, with dark mode enabled.
 
 ---
@@ -245,6 +246,7 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
 With both the backend and frontend running and you logged in:
 
 - Prices load as soon as you open an account and stay current by themselves; the header shows their age ("Prices from 4 min ago", amber when older than two refresh intervals). The app asks the backend every 10 seconds, but that only reads the database: the backend calls the price APIs (CoinMarketCap for the crypto you hold, brapi/Finnhub for `br-equities`/`us-indices`, the Banco Central for USD/BRL) only when its shared prices are older than `PRICE_REFRESH_MINUTES` (default 5), or when an account holds a symbol they don't cover yet. Nothing runs while the app is closed. CoinMarketCap's free plan has 10,000 credits a month and a refresh costs 1 credit per 100 symbols, so the default stays within it even with the app open all day. If a refresh fails, the previous prices stay on screen (with their age) and the APIs are retried after a minute.
+- **Rebalance** opens first: pick today's market sentiment and it lists this round's steps (see [BARCA.md](BARCA.md)).
 - **Holdings** shows the computed breakdown ("View by" position, asset, group or BARCA), with each row's band status and DCA step.
 - **History** plots the persisted history (every price refresh appends a snapshot for each account).
 - **Targets** (Manager+ with edit access to the account) has the **Asset targets** and **BARCA targets** tabs, where you actually manage your portfolio day to day — see the next section. `wallet_allocations.csv` is only a one-time seed, not something you keep editing.
