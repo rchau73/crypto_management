@@ -11,7 +11,9 @@ use crate::domain::models::{
 };
 use crate::usecases::history_service::HistoryLevel;
 use crate::usecases::targets_service::{QuantityCorrection, TargetRow};
-use crate::usecases::trade_service::{TradeOutcome, TradeRequest};
+use crate::usecases::trade_service::{
+    TradeOutcome, TradeRequest, TransferOutcome, TransferRequest,
+};
 use crate::usecases::wallet_import::ImportSummary;
 use axum::Json;
 use axum::extract::{Multipart, Query, State};
@@ -130,6 +132,23 @@ pub async fn record_trade(
         state
             .trades
             .record(scope.portfolio, payload, Some(scope.user.user_id))
+            .await?,
+    ))
+}
+
+/// "Move balance": a quantity moved to another BARCA/group and/or exchange
+/// (e.g. 0.5 BTC from Binance to Deribit), with no trade.
+#[tracing::instrument(skip_all, fields(user_id = scope.user.user_id, portfolio_id = %scope.portfolio, symbol = %payload.from.symbol))]
+pub async fn record_transfer(
+    scope: PortfolioScope,
+    State(state): State<AppState>,
+    Json(payload): Json<TransferRequest>,
+) -> ApiResult<Json<TransferOutcome>> {
+    scope.require_manage()?;
+    Ok(Json(
+        state
+            .trades
+            .transfer(scope.portfolio, payload, Some(scope.user.user_id))
             .await?,
     ))
 }

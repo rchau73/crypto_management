@@ -8,10 +8,15 @@
 //! plus (buy) or minus (sell) the traded quantity — and, optionally, one
 //! for the cash source that paid for it or received the proceeds. Both rows
 //! and the `trades` log entry are written in one transaction.
+//!
+//! A balance move ("Move balance") works the same way without a price: one
+//! row takes the quantity from a source, another adds it (less any fee) to
+//! the destination, which may be another BARCA/group, another exchange or
+//! both — even a position that doesn't exist yet (it starts at a 0% target).
 
 use crate::domain::models::{
     LedgerEntry, PortfolioId, PositionKey, PositionSource, RecordedActivity, SourceChange,
-    TradeRecord, TradeSide,
+    TradeRecord, TradeSide, TransferRecord,
 };
 use crate::domain::repository::{PortfolioRepo, RepoError, StaleSource};
 use crate::usecases::validation::{check_asset_class, check_not_blank};
@@ -133,6 +138,27 @@ pub struct TradeOutcome {
     pub cash_quantity: Option<f64>,
 }
 
+/// Move `quantity` of an asset from one source to another (another
+/// BARCA/group, another exchange, or both). `received` is what arrived, if
+/// a fee was taken on the way (defaults to `quantity`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransferRequest {
+    pub from: SourceRef,
+    pub to: SourceRef,
+    pub quantity: f64,
+    #[serde(default)]
+    pub received: Option<f64>,
+}
+
+/// The new quantities of both sources, and whether the destination is a
+/// brand-new position (which starts with a 0% target).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransferOutcome {
+    pub from_quantity: f64,
+    pub to_quantity: f64,
+    pub new_position: bool,
+}
+
 pub struct TradeService {
     portfolio: Arc<dyn PortfolioRepo>,
 }
@@ -221,6 +247,147 @@ impl TradeService {
         }
         Err(conflict())
     }
+
+    pub async fn transfer(
+        &self,
+        portfolio: PortfolioId,
+        request: TransferRequest,
+        recorded_by: Option<i64>,
+    ) -> Result<TransferOutcome, TradeError> {
+        let request = TransferRequest {
+            from: request.from.trimmed(),
+            to: request.to.trimmed(),
+            ..request
+        };
+        request.from.validate()?;
+        request.to.validate()?;
+        let received = request.received.unwrap_or(request.quantity);
+        check_positive("quantity", request.quantity)?;
+        check_positive("quantity received", received)?;
+        if received > request.quantity + QUANTITY_EPSILON {
+            return Err(TradeError::Invalid(format!(
+                "can't receive more than was sent ({received} > {})",
+                request.quantity
+            )));
+        }
+        if request.from.symbol != request.to.symbol
+            || request.from.asset_class != request.to.asset_class
+        {
+            return Err(TradeError::Invalid(
+                "a move keeps the same asset; to change asset, record a trade".into(),
+            ));
+        }
+
+        for attempt in 1..=WRITE_ATTEMPTS {
+            let sources = self.portfolio.fetch_position_sources(portfolio).await?;
+            let (transfer, changes, new_position) =
+                plan_transfer(&sources, &request, received, recorded_by)?;
+            match self
+                .portfolio
+                .record_transfer(portfolio, &transfer, &changes)
+                .await
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        portfolio_id = %portfolio,
+                        symbol = %transfer.symbol,
+                        from_barca = transfer.from_barca.as_deref().unwrap_or(""),
+                        from_source = transfer.from_source.as_deref().unwrap_or(""),
+                        to_barca = transfer.to_barca.as_deref().unwrap_or(""),
+                        to_source = transfer.to_source.as_deref().unwrap_or(""),
+                        sent = transfer.quantity_sent,
+                        received = transfer.quantity_received,
+                        new_position,
+                        attempt,
+                        "Recorded balance move"
+                    );
+                    return Ok(TransferOutcome {
+                        from_quantity: changes[0].entry.current_quantity,
+                        to_quantity: changes[1].entry.current_quantity,
+                        new_position,
+                    });
+                }
+                Err(e) if is_stale(&e) => {
+                    tracing::warn!(portfolio_id = %portfolio, attempt, error = %e, "Move source changed; retrying");
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(conflict())
+    }
+}
+
+/// The move's log row, its two ledger changes (origin, then destination)
+/// and whether the destination is a new position.
+fn plan_transfer(
+    sources: &[PositionSource],
+    request: &TransferRequest,
+    received: f64,
+    recorded_by: Option<i64>,
+) -> Result<(TransferRecord, Vec<SourceChange>, bool), TradeError> {
+    let new_position = position_sources(sources, &request.to.key()).is_empty();
+    let from = next_entry(
+        sources,
+        &request.from,
+        -request.quantity,
+        None,
+        NewPosition::Refused,
+    )?;
+    let to = next_entry(sources, &request.to, received, None, NewPosition::Allowed)?;
+    // Compared once both are resolved, so "base" vs "Base" or "binance" vs
+    // "Binance" can't pass as different places.
+    if same_source(&from.entry, &to.entry) {
+        return Err(TradeError::Invalid(
+            "the destination is the same as the origin".into(),
+        ));
+    }
+    let transfer = TransferRecord {
+        symbol: from.entry.symbol.clone(),
+        asset_class: from.entry.asset_class.clone(),
+        from_group_name: from.entry.group_name.clone(),
+        from_barca: from.entry.barca.clone(),
+        from_source: from.entry.notes.clone(),
+        to_group_name: to.entry.group_name.clone(),
+        to_barca: to.entry.barca.clone(),
+        to_source: to.entry.notes.clone(),
+        quantity_sent: request.quantity,
+        quantity_received: received.min(request.quantity),
+        recorded_by,
+    };
+    Ok((transfer, vec![from, to], new_position))
+}
+
+fn same_source(a: &LedgerEntry, b: &LedgerEntry) -> bool {
+    let key = |e: &LedgerEntry| PositionKey {
+        symbol: e.symbol.clone(),
+        group_name: e.group_name.clone().unwrap_or_default(),
+        barca: e.barca.clone().unwrap_or_default(),
+        asset_class: e.asset_class.clone(),
+    };
+    key(a) == key(b) && source_name(a.notes.as_deref()) == source_name(b.notes.as_deref())
+}
+
+/// The sources of the position `key` names. A group or BARCA typed in other
+/// capitals ("base" for "Base") is that position, not a new one; an exact
+/// match wins if both spellings are already stored.
+fn position_sources<'a>(
+    sources: &'a [PositionSource],
+    key: &PositionKey,
+) -> Vec<&'a PositionSource> {
+    let exact: Vec<_> = sources.iter().filter(|s| &s.key() == key).collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    sources
+        .iter()
+        .filter(|s| {
+            let k = s.key();
+            k.symbol == key.symbol
+                && k.asset_class == key.asset_class
+                && k.group_name.eq_ignore_ascii_case(&key.group_name)
+                && k.barca.eq_ignore_ascii_case(&key.barca)
+        })
+        .collect()
 }
 
 /// The trade's log row and its ledger changes (the traded source first,
@@ -240,6 +407,7 @@ fn plan_trade(
         &request.asset,
         sign * request.quantity,
         Some(request.price),
+        NewPosition::Refused,
     )?;
     let cash = match &request.cash {
         Some(cash) => Some(next_entry(
@@ -247,6 +415,7 @@ fn plan_trade(
             &cash.position,
             -sign * cash.quantity,
             None,
+            NewPosition::Refused,
         )?),
         None => None,
     };
@@ -293,30 +462,58 @@ fn source_name(notes: Option<&str>) -> &str {
     notes.map(str::trim).unwrap_or("")
 }
 
+/// Whether `next_entry` may start a position that has no source yet.
+#[derive(Clone, Copy, PartialEq)]
+enum NewPosition {
+    Allowed,
+    Refused,
+}
+
 /// The ledger row that moves `target`'s source by `change` units, with the
-/// quantity it started from. The position must exist; the source may be new
-/// (it starts at 0). A source can't go below zero.
+/// quantity it started from. The source may be new (it starts at 0); the
+/// position too, if `new_position` allows it. A source can't go below zero.
 fn next_entry(
     sources: &[PositionSource],
     target: &SourceRef,
     change: f64,
     last_price: Option<f64>,
+    new_position: NewPosition,
 ) -> Result<SourceChange, TradeError> {
     let key = target.key();
-    let of_position: Vec<&PositionSource> = sources.iter().filter(|s| s.key() == key).collect();
+    let of_position = position_sources(sources, &key);
     // Any source of the position gives the key exactly as stored (NULL vs
     // ''), so the new row lands in the same position.
-    let template = of_position.first().ok_or_else(|| {
-        TradeError::NotFound(format!(
-            "no position for {} in {}",
-            target.symbol,
-            if key.barca.is_empty() {
-                "this account"
-            } else {
-                &key.barca
-            }
-        ))
-    })?;
+    let (symbol, group_name, barca, asset_class) = match of_position.first() {
+        Some(t) => (
+            t.symbol.clone(),
+            t.group_name.clone(),
+            t.barca.clone(),
+            t.asset_class.clone(),
+        ),
+        None if new_position == NewPosition::Allowed => {
+            let group = target.group_name.as_deref().unwrap_or("").trim();
+            let barca = target.barca.as_deref().unwrap_or("").trim();
+            check_not_blank("BARCA", barca)?;
+            check_not_blank("group", group)?;
+            (
+                target.symbol.trim().to_string(),
+                Some(group.to_string()),
+                Some(barca.to_string()),
+                target.asset_class.clone(),
+            )
+        }
+        None => {
+            return Err(TradeError::NotFound(format!(
+                "no position for {} in {}",
+                target.symbol,
+                if key.barca.is_empty() {
+                    "this account"
+                } else {
+                    &key.barca
+                }
+            )));
+        }
+    };
     let wanted = source_name(target.source.as_deref());
     // "binance" is the existing "Binance", not a second exchange; an exact
     // match wins if both spellings are already stored.
@@ -347,10 +544,10 @@ fn next_entry(
     }
 
     let entry = LedgerEntry {
-        symbol: template.symbol.clone(),
-        group_name: template.group_name.clone(),
-        barca: template.barca.clone(),
-        asset_class: template.asset_class.clone(),
+        symbol,
+        group_name,
+        barca,
+        asset_class,
         current_quantity: quantity,
         last_price,
         // An existing source keeps its notes exactly, so the new row
@@ -734,5 +931,266 @@ mod tests {
             service.record(PORTFOLIO, request, None).await,
             Err(TradeError::Invalid(_))
         ));
+    }
+
+    fn mv(from: SourceRef, to: SourceRef, quantity: f64) -> TransferRequest {
+        TransferRequest {
+            from,
+            to,
+            quantity,
+            received: None,
+        }
+    }
+
+    async fn position_quantity(repo: &SqliteRepo, symbol: &str, barca: &str) -> Option<f64> {
+        repo.fetch_positions(PORTFOLIO)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.symbol == symbol && p.barca.as_deref() == Some(barca))
+            .map(|p| p.current_quantity)
+    }
+
+    #[tokio::test]
+    async fn a_move_between_exchanges_keeps_the_position_total() {
+        let (service, repo) = service().await;
+        let outcome = service
+            .transfer(
+                PORTFOLIO,
+                mv(
+                    at("BTC", "Base", Some("Binance")),
+                    at("BTC", "Base", Some("Deribit Crypto Options")),
+                    0.5,
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            TransferOutcome {
+                from_quantity: 0.0,
+                to_quantity: 0.5,
+                new_position: false
+            }
+        );
+        assert_eq!(held(&repo, "BTC", "Binance").await, Some(0.0));
+        assert_eq!(
+            held(&repo, "BTC", "Deribit Crypto Options").await,
+            Some(0.5)
+        );
+        assert_eq!(position_quantity(&repo, "BTC", "Base").await, Some(1.5));
+    }
+
+    #[tokio::test]
+    async fn a_move_to_another_barca_starts_a_new_position_at_a_zero_target() {
+        let (service, repo) = service().await;
+        let outcome = service
+            .transfer(
+                PORTFOLIO,
+                mv(
+                    at("BTC", "Base", Some("Ledger")),
+                    at("BTC", "RendaPassiva", Some("Deribit")),
+                    0.15,
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(outcome.new_position);
+        assert_eq!(position_quantity(&repo, "BTC", "Base").await, Some(1.35));
+        assert_eq!(
+            position_quantity(&repo, "BTC", "RendaPassiva").await,
+            Some(0.15)
+        );
+        let positions = repo.fetch_positions(PORTFOLIO).await.unwrap();
+        let moved = positions
+            .iter()
+            .find(|p| p.symbol == "BTC" && p.barca.as_deref() == Some("RendaPassiva"))
+            .unwrap();
+        assert_eq!(moved.target_percent, 0.0);
+        assert_eq!(moved.group_name.as_deref(), Some("RendaPassiva"));
+    }
+
+    #[tokio::test]
+    async fn a_fee_means_less_arrives_and_is_logged() {
+        let (service, repo) = service().await;
+        let request = TransferRequest {
+            received: Some(0.4995),
+            ..mv(
+                at("BTC", "Base", Some("Binance")),
+                at("BTC", "Base", Some("Deribit")),
+                0.5,
+            )
+        };
+        service.transfer(PORTFOLIO, request, None).await.unwrap();
+        assert_eq!(held(&repo, "BTC", "Deribit").await, Some(0.4995));
+        let (sent, received): (f64, f64) =
+            sqlx::query_as("SELECT quantity_sent, quantity_received FROM transfers")
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!((sent, received), (0.5, 0.4995));
+    }
+
+    #[tokio::test]
+    async fn spaces_or_capitals_in_the_destination_never_overwrite_a_balance() {
+        let (service, repo) = service().await;
+        repo.append_ledger_entries(
+            PORTFOLIO,
+            &[entry("BTC", "RendaPassiva", 1.0, Some("Deribit"))],
+        )
+        .await
+        .unwrap();
+        // Regression: " RendaPassiva " used to count as a new position that
+        // started at 0, and its row replaced Deribit's 1.0 with 0.1.
+        let mut padded = at("BTC", "RendaPassiva ", Some("Deribit"));
+        padded.group_name = Some(" RendaPassiva".into());
+        let outcome = service
+            .transfer(
+                PORTFOLIO,
+                mv(at("BTC", "Base", Some("Binance")), padded, 0.1),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!outcome.new_position);
+        assert_eq!(
+            position_quantity(&repo, "BTC", "RendaPassiva").await,
+            Some(1.1)
+        );
+
+        // Other capitals are the same position and the same exchange.
+        let outcome = service
+            .transfer(
+                PORTFOLIO,
+                mv(
+                    at("BTC", "Base", Some("Binance")),
+                    at("BTC", "rendapassiva", Some("deribit")),
+                    0.1,
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!outcome.new_position);
+        assert!((held(&repo, "BTC", "Deribit").await.unwrap() - 1.2).abs() < 1e-12);
+        assert_eq!(held(&repo, "BTC", "deribit").await, None);
+        assert_eq!(position_quantity(&repo, "BTC", "Base").await, Some(1.3));
+
+        // And the origin itself, spelled differently, is not a destination.
+        for to in [
+            at("BTC", "Base ", Some("Binance")),
+            at("BTC", "base", Some("BINANCE")),
+        ] {
+            assert!(matches!(
+                service
+                    .transfer(
+                        PORTFOLIO,
+                        mv(at("BTC", "Base", Some("Binance")), to, 0.1),
+                        None
+                    )
+                    .await,
+                Err(TradeError::Invalid(_))
+            ));
+        }
+        assert!((position_quantity(&repo, "BTC", "Base").await.unwrap() - 1.3).abs() < 1e-12);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn moves_and_trades_at_the_same_time_are_all_counted() {
+        let (service, repo, path) = file_service("moves").await;
+        let tasks: Vec<_> = (0..10)
+            .map(|i| {
+                let service = service.clone();
+                tokio::spawn(async move {
+                    if i % 2 == 0 {
+                        service
+                            .transfer(
+                                PORTFOLIO,
+                                mv(
+                                    at("BTC", "Base", Some("Binance")),
+                                    at("BTC", "Base", Some("Deribit")),
+                                    0.01,
+                                ),
+                                None,
+                            )
+                            .await
+                            .map(|_| "move")
+                    } else {
+                        service
+                            .record(
+                                PORTFOLIO,
+                                buy(at("BTC", "Base", Some("Binance")), 0.02, 1.0),
+                                None,
+                            )
+                            .await
+                            .map(|_| "buy")
+                    }
+                })
+            })
+            .collect();
+        let (mut moves, mut buys) = (0, 0);
+        for task in tasks {
+            match task.await.unwrap() {
+                Ok("move") => moves += 1,
+                Ok(_) => buys += 1,
+                Err(TradeError::Conflict(_)) => {}
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+        let binance = held(&repo, "BTC", "Binance").await.unwrap();
+        let deribit = held(&repo, "BTC", "Deribit").await.unwrap_or(0.0);
+        assert!((binance - (0.5 - 0.01 * moves as f64 + 0.02 * buys as f64)).abs() < 1e-9);
+        assert!((deribit - 0.01 * moves as f64).abs() < 1e-9);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_move_that_cannot_happen_is_refused_and_writes_nothing() {
+        let (service, repo) = service().await;
+        let binance = || at("BTC", "Base", Some("Binance"));
+        let cases = [
+            // More than the origin holds.
+            mv(binance(), at("BTC", "Base", Some("Deribit")), 0.6),
+            // Nowhere to go.
+            mv(binance(), at("BTC", "Base", Some(" Binance ")), 0.1),
+            // Another asset: that's a trade.
+            mv(binance(), at("ETH", "Base", Some("Deribit")), 0.1),
+            // A new position needs a BARCA and a group.
+            mv(binance(), at("BTC", "", Some("Deribit")), 0.1),
+            TransferRequest {
+                received: Some(0.2),
+                ..mv(binance(), at("BTC", "Base", Some("Deribit")), 0.1)
+            },
+            mv(binance(), at("BTC", "Base", Some("Deribit")), 0.0),
+        ];
+        for request in cases {
+            let label = format!("{:?} -> {:?}", request.from.source, request.to);
+            assert!(
+                matches!(
+                    service.transfer(PORTFOLIO, request, None).await,
+                    Err(TradeError::Invalid(_))
+                ),
+                "{label}"
+            );
+        }
+        // The origin must exist.
+        assert!(matches!(
+            service
+                .transfer(
+                    PORTFOLIO,
+                    mv(
+                        at("BTC", "Altcoins", Some("Binance")),
+                        at("BTC", "Base", Some("Deribit")),
+                        0.1
+                    ),
+                    None
+                )
+                .await,
+            Err(TradeError::NotFound(_))
+        ));
+        assert_eq!(held(&repo, "BTC", "Binance").await, Some(0.5));
+        assert_eq!(held(&repo, "BTC", "Deribit").await, None);
     }
 }

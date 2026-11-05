@@ -8,7 +8,7 @@ use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
     PortfolioSummary, PositionSource, RecordedActivity, RefreshToken, SourceChange,
-    TotalHistoryRow, TradeRecord, User, WalletPosition,
+    TotalHistoryRow, TradeRecord, TransferRecord, User, WalletPosition,
 };
 use crate::domain::repository::{
     BarcaTargetRepo, NewUser, PortfolioDirectoryRepo, PortfolioRepo, RefreshTokenRepo, RepoError,
@@ -266,16 +266,61 @@ impl PortfolioRepo for SqliteRepo {
         Ok(())
     }
 
+    async fn record_transfer(
+        &self,
+        portfolio: PortfolioId,
+        transfer: &TransferRecord,
+        changes: &[SourceChange],
+    ) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await?;
+        // The log row goes first: it takes the write lock before the
+        // sources are checked (see apply_source_changes).
+        sqlx::query(
+            "INSERT INTO transfers \
+             (portfolio_id, symbol, asset_class, from_group_name, from_barca, from_source, \
+              to_group_name, to_barca, to_source, quantity_sent, quantity_received, recorded_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )
+        .bind(portfolio)
+        .bind(&transfer.symbol)
+        .bind(&transfer.asset_class)
+        .bind(&transfer.from_group_name)
+        .bind(&transfer.from_barca)
+        .bind(&transfer.from_source)
+        .bind(&transfer.to_group_name)
+        .bind(&transfer.to_barca)
+        .bind(&transfer.to_source)
+        .bind(transfer.quantity_sent)
+        .bind(transfer.quantity_received)
+        .bind(transfer.recorded_by)
+        .execute(&mut *tx)
+        .await?;
+        apply_source_changes(&mut tx, portfolio, changes).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn fetch_recorded_activity(
         &self,
         portfolio: PortfolioId,
     ) -> RepoResult<RecordedActivity> {
-        let (trades, latest_at): (i64, Option<String>) =
-            sqlx::query_as("SELECT COUNT(*), MAX(created_at) FROM trades WHERE portfolio_id = ?1")
-                .bind(portfolio)
-                .fetch_one(&self.pool)
-                .await?;
-        Ok(RecordedActivity { trades, latest_at })
+        let (trades, transfers, latest_at): (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT \
+                 (SELECT COUNT(*) FROM trades WHERE portfolio_id = ?1), \
+                 (SELECT COUNT(*) FROM transfers WHERE portfolio_id = ?1), \
+                 (SELECT MAX(created_at) FROM ( \
+                     SELECT created_at FROM trades WHERE portfolio_id = ?1 \
+                     UNION ALL \
+                     SELECT created_at FROM transfers WHERE portfolio_id = ?1))",
+        )
+        .bind(portfolio)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(RecordedActivity {
+            trades,
+            transfers,
+            latest_at,
+        })
     }
 }
 
@@ -700,8 +745,12 @@ impl UserRepo for SqliteRepo {
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        // The trades log keeps the trade, without who recorded it.
+        // The trades and moves logs keep each entry, without who recorded it.
         sqlx::query("UPDATE trades SET recorded_by = NULL WHERE recorded_by = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE transfers SET recorded_by = NULL WHERE recorded_by = ?1")
             .bind(id)
             .execute(&mut *tx)
             .await?;

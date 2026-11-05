@@ -153,11 +153,13 @@ impl PositionSource {
     }
 }
 
-/// What "Record trade" has written to a portfolio, so the import can warn
-/// that an older CSV would put back the balances from before.
+/// What "Record trade" and "Move balance" have written to a portfolio, so
+/// the import can warn that an older CSV would put back the balances from
+/// before.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct RecordedActivity {
     pub trades: i64,
+    pub transfers: i64,
     /// When the latest one was recorded (UTC, ISO 8601), if any.
     pub latest_at: Option<String>,
 }
@@ -198,6 +200,24 @@ pub struct TradeRecord {
     pub cash_source: Option<String>,
     /// Units of the cash asset spent (buy) or received (sell).
     pub cash_quantity: Option<f64>,
+    pub recorded_by: Option<i64>,
+}
+
+/// One row of the `transfers` log: a quantity moved from one source (BARCA,
+/// group, exchange) to another of the same asset. No price: the value only
+/// changes place. `quantity_sent - quantity_received` is the fee, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransferRecord {
+    pub symbol: String,
+    pub asset_class: String,
+    pub from_group_name: Option<String>,
+    pub from_barca: Option<String>,
+    pub from_source: Option<String>,
+    pub to_group_name: Option<String>,
+    pub to_barca: Option<String>,
+    pub to_source: Option<String>,
+    pub quantity_sent: f64,
+    pub quantity_received: f64,
     pub recorded_by: Option<i64>,
 }
 

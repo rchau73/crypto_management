@@ -9,7 +9,7 @@ vi.mock("../hooks/useCurrentPortfolio", () => ({ useCurrentPortfolio: () => ({ i
 
 beforeEach(() => {
   fetchRecordedActivity.mockReset();
-  fetchRecordedActivity.mockResolvedValue({ trades: 0, latest_at: null });
+  fetchRecordedActivity.mockResolvedValue({ trades: 0, transfers: 0, latest_at: null });
 });
 
 const csvFile = (savedAt) =>
@@ -49,8 +49,8 @@ describe("ActionsBar", () => {
 
     await user.upload(document.querySelector('input[type="file"]'), csvFile("2026-11-01T10:00:00Z"));
 
-    expect(await screen.findByRole("dialog", { name: "This file may undo trades recorded in Spouse" })).toBeInTheDocument();
-    expect(screen.getByText(/2026-11-03 14:20:00 \(BRT\), after wallet.csv was saved/)).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "This file may undo trades or moves recorded in Spouse" })).toBeInTheDocument();
+    expect(screen.getByText(/move was recorded on 2026-11-03 14:20:00 \(BRT\), after wallet.csv was saved/)).toBeInTheDocument();
     expect(fetchRecordedActivity).toHaveBeenCalledWith(2);
     expect(onImport).not.toHaveBeenCalled();
 
@@ -93,7 +93,7 @@ describe("ActionsBar", () => {
 
     await user.upload(document.querySelector('input[type="file"]'), csvFile("2026-11-04T09:00:00Z"));
 
-    expect(await screen.findByText(/Couldn't check the trades recorded in Spouse/)).toBeInTheDocument();
+    expect(await screen.findByText(/Couldn't check the trades and moves recorded in Spouse/)).toBeInTheDocument();
   });
 
   it("does not call onImport when the file input is cleared without a selection", () => {

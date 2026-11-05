@@ -96,9 +96,11 @@ describe("RebalanceTab", () => {
     const { unmount } = render(<Harness />);
     await user.click(screen.getByRole("button", { name: "Fear / Extreme fear" }));
     expect(screen.queryByRole("button", { name: /Record trade/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move balance" })).not.toBeInTheDocument();
     unmount();
 
     render(<Harness canRecord />);
+    expect(steps().getByRole("button", { name: "Move balance" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fear / Extreme fear" }));
     await user.click(steps().getByRole("button", { name: "Record trade: Buy BTC" }));
     const dialog = screen.getByRole("dialog", { name: /Record trade/ });

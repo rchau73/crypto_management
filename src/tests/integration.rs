@@ -584,6 +584,54 @@ async fn recording_a_trade_moves_that_exchange_and_the_allocations_follow() {
 }
 
 #[tokio::test]
+async fn moving_balance_needs_manage_and_keeps_the_total() {
+    let app = default_app().await;
+    let body = json!({
+        "from": { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Ledger" },
+        "to": { "symbol": "BTC", "group_name": "Yield", "barca": "RendaPassiva", "asset_class": "crypto", "source": "Deribit" },
+        "quantity": 0.25,
+    });
+
+    let viewer = login(&app, "viewer").await;
+    let (status, _) = send(
+        &app,
+        with_json("POST", "/api/portfolios/1/transfers", &viewer, body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let manager = login(&app, "manager").await;
+    let (status, outcome) = send(
+        &app,
+        with_json("POST", "/api/portfolios/1/transfers", &manager, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{outcome}");
+    assert_eq!(outcome["new_position"], true);
+
+    let (_, report) = send(&app, get("/api/portfolios/1/allocations", &manager)).await;
+    let btc_value = |barca: &str| {
+        report["per_asset"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["symbol"] == "BTC" && r["barca"] == barca)
+            .unwrap()["value"]
+            .as_f64()
+            .unwrap()
+    };
+    // 1.5 BTC at $10: 1.25 stays in Base, 0.25 moved; the total is unchanged.
+    assert_eq!(btc_value("Base"), 12.5);
+    assert_eq!(btc_value("RendaPassiva"), 2.5);
+
+    // The CSV import's warning counts moves too.
+    let (_, activity) = send(&app, get("/api/portfolios/1/recorded_activity", &manager)).await;
+    assert_eq!(activity["transfers"], 1);
+    assert_eq!(activity["trades"], 0);
+    assert!(activity["latest_at"].is_string());
+}
+
+#[tokio::test]
 async fn barca_targets_round_trip_for_a_manager() {
     let app = default_app().await;
     let manager = login(&app, "manager").await;
@@ -866,6 +914,12 @@ async fn a_non_member_gets_404_on_every_route_of_the_portfolio() {
             "/api/portfolios/1/trades",
             &outsider,
             json!({ "side": "buy", "asset": { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Binance" }, "quantity": 1.0, "price": 10.0 }),
+        ),
+        with_json(
+            "POST",
+            "/api/portfolios/1/transfers",
+            &outsider,
+            json!({ "from": { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Binance" }, "to": { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "source": "Deribit" }, "quantity": 0.1 }),
         ),
         csv_upload(&outsider, "wallet.csv", NEW_ASSET_CSV),
     ];

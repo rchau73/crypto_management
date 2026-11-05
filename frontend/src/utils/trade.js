@@ -17,7 +17,7 @@ export function sourceLabel(notes) {
 
 // A stable id per source for the pickers; biggest first, so the default
 // pick is where most of the position sits.
-function withIds(sources) {
+export function sourceOptions(sources) {
   return sources
     .map((s) => ({ ...s, id: [s.symbol, s.group_name || "", s.barca || "", s.asset_class, sourceName(s.notes)].join("|") }))
     .sort((a, b) => b.current_quantity - a.current_quantity || sourceName(a.notes).localeCompare(sourceName(b.notes)));
@@ -25,12 +25,12 @@ function withIds(sources) {
 
 // The sources of `symbol` inside `barca`, biggest first.
 export function assetSources(sources, symbol, barca) {
-  return withIds(sources.filter((s) => s.symbol === symbol && (s.barca || "") === (barca || "")));
+  return sourceOptions(sources.filter((s) => s.symbol === symbol && (s.barca || "") === (barca || "")));
 }
 
 // Every Caixa source (stablecoins, cash), biggest first.
 export function cashSources(sources) {
-  return withIds(sources.filter((s) => s.barca === CASH_BARCA));
+  return sourceOptions(sources.filter((s) => s.barca === CASH_BARCA));
 }
 
 // The cash source on the same exchange as the trade, else the biggest one.

@@ -115,6 +115,10 @@ pub fn build_router(state: AppState) -> Router {
             get(portfolio::recorded_activity),
         )
         .route(
+            "/api/portfolios/{id}/transfers",
+            post(portfolio::record_transfer),
+        )
+        .route(
             "/api/portfolios/{id}/barca/targets",
             get(portfolio::get_barca_targets).put(portfolio::save_barca_targets),
         )

@@ -16,6 +16,11 @@ describe("staleImportWarning", () => {
     expect(staleImportWarning(fileAt("2026-11-03T18:00:00Z"), activity)).toBeNull();
   });
 
+  it("counts balance moves like trades", () => {
+    const moves = { trades: 0, transfers: 1, latest_at: "2026-11-03T17:20:00.000Z" };
+    expect(staleImportWarning(fileAt("2026-11-01T10:00:00Z"), moves)).toEqual({ latestAt: moves.latest_at });
+  });
+
   it("lets anything import when nothing was recorded", () => {
     expect(staleImportWarning(fileAt("2020-01-01T00:00:00Z"), { trades: 0, latest_at: null })).toBeNull();
   });

@@ -31,7 +31,7 @@ import { formatBrt } from "../utils/time";
 // the backend can read a path from its own filesystem, which doesn't hold
 // once the backend is a container/serverless deploy you can't shell into.
 //
-// A file saved before the latest trade recorded in the app would put the
+// A file saved before the latest trade or move recorded in the app would put the
 // old balances back (see utils/importGuard), so that one asks first.
 export function ActionsBar({ accountName, importing, onImport, exporting, onExport, canImport }) {
   const { id: portfolioId } = useCurrentPortfolio();
@@ -80,17 +80,17 @@ export function ActionsBar({ accountName, importing, onImport, exporting, onExpo
       {stale && (
         <Dialog open onClose={() => setStale(null)} maxWidth="sm" aria-labelledby="stale-import-title">
           <DialogTitle id="stale-import-title" sx={{ fontWeight: 700 }}>
-            This file may undo trades recorded in {accountName}
+            This file may undo trades or moves recorded in {accountName}
           </DialogTitle>
           <DialogContent>
             <DialogContentText sx={{ mb: 1.5 }}>
               {stale.latestAt
-                ? `The latest trade was recorded on ${formatBrt(stale.latestAt)} (BRT), after ${stale.file.name} was saved.`
-                : `Couldn't check the trades recorded in ${accountName}. If any came after ${stale.file.name} was saved, read this first.`}
+                ? `The latest trade or move was recorded on ${formatBrt(stale.latestAt)} (BRT), after ${stale.file.name} was saved.`
+                : `Couldn't check the trades and moves recorded in ${accountName}. If any came after ${stale.file.name} was saved, read this first.`}
             </DialogContentText>
             <DialogContentText>
               Importing sets every exchange the file lists back to the file's quantities. A balance recorded on an
-              exchange the file doesn't list is kept, so it can be counted twice. Export the current wallet and edit
+              exchange or BARCA the file doesn't list is kept, so it can be counted twice. Export the current wallet and edit
               that file instead.
             </DialogContentText>
           </DialogContent>
