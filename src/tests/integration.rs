@@ -575,6 +575,12 @@ async fn recording_a_trade_moves_that_exchange_and_the_allocations_follow() {
         .find(|s| s["symbol"] == "BTC" && s["notes"] == "Binance")
         .unwrap();
     assert_eq!(binance["current_quantity"], 0.3);
+
+    // The CSV import's warning sees the one trade that went through.
+    let (status, activity) = send(&app, get("/api/portfolios/1/recorded_activity", &viewer)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(activity["trades"], 1);
+    assert!(activity["latest_at"].as_str().unwrap().ends_with('Z'));
 }
 
 #[tokio::test]
@@ -824,6 +830,7 @@ async fn a_non_member_gets_404_on_every_route_of_the_portfolio() {
         "/api/portfolios/1/barca/targets?market=BullMarket",
         "/api/portfolios/1/export_wallets",
         "/api/portfolios/1/sources",
+        "/api/portfolios/1/recorded_activity",
     ];
     for uri in gets {
         let (status, _) = send(&app, get(uri, &outsider)).await;

@@ -266,7 +266,9 @@ Once you have data, the DB — not the CSV — is authoritative:
 
 After buying or selling on an exchange, open **Rebalance** and click **Record trade** on the step (or **Record a trade** for any asset). Pick the exchange, enter the quantity and your fill price, and optionally move the cash in Caixa (e.g. USDT on the same exchange). The app adds a ledger row for that exchange only (old quantity ± traded quantity), plus one for the cash source, and logs the trade in `trades`, all in one transaction. A sell larger than that exchange holds is refused. Needs manage access to the account.
 
-Those quantities now live only in the DB. **Export Wallet CSV** before editing the CSV again, or a re-import of an older file will overwrite them.
+Exchange, group and BARCA names are matched with surrounding spaces ignored, and a typed exchange name matches an existing one whatever its capitals ("binance" is your "Binance"). Each save checks, inside its transaction, that the sources still hold what it read; if another save got there first (a second tab), it reads again and retries, and after three tries it answers 409 so you can check and save again. No trade is ever counted on top of a stale quantity.
+
+Those quantities now live only in the DB. **Export Wallet CSV** before editing the CSV again. Re-importing an older file doesn't just overwrite them, it can **double-count**: every source the file lists goes back to the file's quantity, while a source it doesn't list (a buy on a new exchange) is kept. For example, a buy on a new exchange paid with USDT keeps the new coins *and* gets the USDT back. So when the chosen file was saved before the latest recorded trade, **Import CSV** first warns and offers **Export current CSV** (`GET /api/portfolios/{id}/recorded_activity` gives the trade count and the latest time).
 
 ### Manually re-importing the CSV
 

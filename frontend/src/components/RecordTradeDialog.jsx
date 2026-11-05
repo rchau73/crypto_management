@@ -32,6 +32,7 @@ import {
   previewTrade,
   priceOf,
   sourceLabel,
+  sourceName,
   tradablePositions,
 } from "../utils/trade";
 
@@ -86,8 +87,12 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
   const cashOptions = useMemo(() => cashSources(sources || []), [sources]);
   const chosenId = exchangeId ?? options[0]?.id ?? NEW_SOURCE;
   const isNew = chosenId === NEW_SOURCE;
-  const chosen = options.find((o) => o.id === chosenId) ?? null;
-  const exchange = isNew ? newExchange : chosen?.notes;
+  // A typed name that is an existing exchange ("binance" for "Binance") is
+  // that exchange, not a second one (the server matches it the same way).
+  const typedName = newExchange.trim().toLowerCase();
+  const typedMatch = isNew && typedName ? options.find((o) => sourceName(o.notes).toLowerCase() === typedName) : null;
+  const chosen = typedMatch ?? options.find((o) => o.id === chosenId) ?? null;
+  const exchange = isNew && !typedMatch ? newExchange : chosen?.notes;
   const held = chosen?.current_quantity ?? 0;
 
   const cash = cashOptions.find((c) => c.id === cashId) ?? defaultCashSource(cashOptions, exchange);
@@ -212,7 +217,17 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
               <MenuItem value={NEW_SOURCE}>Another exchange…</MenuItem>
             </TextField>
             {isNew && (
-              <TextField label="Exchange name" value={newExchange} onChange={(e) => setNewExchange(e.target.value)} autoFocus />
+              <TextField
+                label="Exchange name"
+                value={newExchange}
+                onChange={(e) => setNewExchange(e.target.value)}
+                helperText={
+                  typedMatch
+                    ? `That's ${sourceLabel(typedMatch.notes)}, which holds ${formatQuantity(held)} ${symbol}: the trade goes there`
+                    : " "
+                }
+                autoFocus
+              />
             )}
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>

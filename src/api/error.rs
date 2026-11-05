@@ -91,6 +91,7 @@ impl From<TradeError> for ApiError {
         match e {
             TradeError::Invalid(message) => ApiError::bad_request(message),
             TradeError::NotFound(message) => ApiError::not_found(message),
+            TradeError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
             TradeError::Repo(e) => ApiError::internal(e),
         }
     }

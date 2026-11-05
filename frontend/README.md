@@ -48,6 +48,7 @@ There's no router and no self-registration — `App.jsx` just renders `LoginPage
 
 - The session lives in `HttpOnly` cookies the browser manages automatically — the frontend never reads or stores a token itself.
 - `ActionsBar` hides (not just disables) "Import Wallet CSV" for the `user` role, so the permission boundary is visible rather than a button that would just 403.
+- Before importing, `ActionsBar` compares the chosen file's saved time with the latest trade recorded in the app (`utils/importGuard.js`). An older file opens a warning that states the consequence (old balances come back, a new exchange's balance can be counted twice) and offers **Export current CSV** as the main action; "Import anyway into <account>" stays available. If the check itself fails, it warns rather than importing blind.
 - An expired access token is invisible to the rest of the app: `api/client.js` retries once through `/api/auth/refresh` before surfacing any error.
 
 ---

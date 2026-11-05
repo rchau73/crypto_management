@@ -85,6 +85,20 @@ describe("RecordTradeDialog", () => {
     expect(onRecorded).not.toHaveBeenCalled();
   });
 
+  it("treats a typed exchange name in other capitals as the existing exchange", async () => {
+    open();
+    await screen.findByTestId("trade-preview");
+    await userEvent.click(screen.getByLabelText("Exchange"));
+    await userEvent.click(await screen.findByRole("option", { name: "Another exchange…" }));
+    await userEvent.type(screen.getByLabelText("Exchange name"), " binance");
+
+    expect(screen.getByText("That's Binance, which holds 40 SYRUP: the trade goes there")).toBeInTheDocument();
+    expect(within(screen.getByTestId("trade-preview")).getByText("SYRUP on Binance: 40 → 60")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Record buy in Account A" }));
+    await waitFor(() => expect(api.recordTrade).toHaveBeenCalled());
+    expect(api.recordTrade.mock.calls[0][1].asset.source).toBe("Binance");
+  });
+
   it("without a step, asks which asset and leaves the quantity empty", async () => {
     open({ preset: null });
     await screen.findByTestId("trade-preview");

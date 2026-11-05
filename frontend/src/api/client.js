@@ -208,6 +208,13 @@ export async function recordTrade(portfolioId, trade) {
   return parseJsonOrThrow(res, "Failed to record the trade");
 }
 
+// { trades, latest_at }: what Record trade has written, so the CSV import
+// can warn before an older file puts the old balances back.
+export async function fetchRecordedActivity(portfolioId) {
+  const res = await apiFetch(portfolioPath(portfolioId, "/recorded_activity"));
+  return parseJsonOrThrow(res, "Failed to check the recorded trades");
+}
+
 export async function fetchBarcaTargets(portfolioId, market) {
   const res = await apiFetch(portfolioPath(portfolioId, `/barca/targets?market=${encodeURIComponent(market)}`));
   return parseJsonOrThrow(res, "Failed to fetch BARCA targets");
