@@ -208,6 +208,14 @@ export async function recordTrade(portfolioId, trade) {
   return parseJsonOrThrow(res, "Failed to record the trade");
 }
 
+// { trades, transfers, latest_at }: what Record trade and Move balance have
+// written, so the CSV import can warn before an older file puts the old
+// balances back.
+export async function fetchRecordedActivity(portfolioId) {
+  const res = await apiFetch(portfolioPath(portfolioId, "/recorded_activity"));
+  return parseJsonOrThrow(res, "Failed to check the recorded trades");
+}
+
 // Moves a quantity to another BARCA/group and/or exchange, with no trade.
 // Returns { from_quantity, to_quantity, new_position }.
 export async function recordTransfer(portfolioId, transfer) {

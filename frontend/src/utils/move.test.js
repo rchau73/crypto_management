@@ -32,6 +32,12 @@ describe("pickers", () => {
     expect(defaultGroup(sources, "BTC", "Base")).toBe("Base");
     expect(defaultGroup(sources, "BTC", "RendaPassiva")).toBe("Yield");
     expect(defaultGroup(sources, "BTC", "Caixa")).toBe("Caixa");
+    // Same BARCA as the origin: the origin's own group, even when the BARCA
+    // has others (and even an imported blank one).
+    const other = { ...sources[0], group_name: "Hedge" };
+    expect(defaultGroup([...sources, other], "BTC", "Base", other)).toBe("Hedge");
+    expect(defaultGroup(sources, "BTC", "Base", { ...sources[0], group_name: null })).toBe("");
+    expect(defaultGroup(sources, "BTC", "RendaPassiva", sources[0])).toBe("Yield");
     expect(exchangeNames(sources)).toEqual(["Avenue", "Binance", "Ledger", "Old"]);
   });
 
@@ -39,12 +45,26 @@ describe("pickers", () => {
     expect(destination(sources, { symbol: "BTC", assetClass: "crypto", group: "Base", barca: "Base", exchange: "Binance" })).toEqual({
       held: 0.5,
       newPosition: false,
+      group: "Base",
+      exchange: "Binance",
     });
     expect(destination(sources, { symbol: "BTC", assetClass: "crypto", group: "Yield", barca: "RendaPassiva", exchange: "Deribit" })).toEqual({
       held: 0,
       newPosition: true,
+      group: "Yield",
+      exchange: "Deribit",
     });
     expect(isSamePlace(sources[0], { group: "Base ", barca: "Base", exchange: " Binance" })).toBe(true);
+  });
+
+  it("matches a group or exchange typed in other capitals to the stored one", () => {
+    expect(destination(sources, { symbol: "BTC", assetClass: "crypto", group: " base", barca: "Base", exchange: "binance" })).toEqual({
+      held: 0.5,
+      newPosition: false,
+      group: "Base",
+      exchange: "Binance",
+    });
+    expect(isSamePlace(sources[0], { group: "BASE", barca: "Base", exchange: "BINANCE" })).toBe(true);
   });
 });
 
@@ -65,6 +85,8 @@ describe("previewMove", () => {
       "Name the destination group.",
     ]);
     expect(previewMove({ ...base, quantity: 0.1, received: 0.1, samePlace: true }).problems).toEqual(["The destination is the same as the origin."]);
+    // An existing position imported without a group is still a destination.
+    expect(previewMove({ ...base, quantity: 0.1, received: 0.1, group: "", newPosition: false }).problems).toEqual([]);
   });
 });
 

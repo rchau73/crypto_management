@@ -111,6 +111,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/portfolios/{id}/sources", get(portfolio::list_sources))
         .route("/api/portfolios/{id}/trades", post(portfolio::record_trade))
         .route(
+            "/api/portfolios/{id}/recorded_activity",
+            get(portfolio::recorded_activity),
+        )
+        .route(
             "/api/portfolios/{id}/transfers",
             post(portfolio::record_transfer),
         )

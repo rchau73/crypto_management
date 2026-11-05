@@ -78,6 +78,25 @@ describe("MoveBalanceDialog", () => {
     expect(body.received).toBe(0.4995);
   });
 
+  it("changing only the exchange keeps the origin's group, and other capitals are the same exchange", async () => {
+    const user = userEvent.setup();
+    api.fetchPositionSources.mockResolvedValue([
+      { symbol: "BTC", group_name: "Alpha", barca: "Base", asset_class: "crypto", current_quantity: 0.5, notes: "Ledger" },
+      { symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto", current_quantity: 1, notes: "Binance" },
+    ]);
+    open();
+    const preview = await screen.findByTestId("move-preview");
+    await user.type(screen.getByLabelText("Quantity to move (BTC)"), "0.1");
+    const exchange = screen.getByLabelText("To exchange");
+    await user.clear(exchange);
+    await user.type(exchange, "Deribit");
+    expect(within(preview).getByText("BTC Base · Core · Deribit: 0 → 0.1")).toBeInTheDocument();
+
+    await user.clear(exchange);
+    await user.type(exchange, "BINANCE");
+    expect(screen.getByText("The destination is the same as the origin.")).toBeInTheDocument();
+  });
+
   it("won't move more than the origin holds, or to the same place", async () => {
     const user = userEvent.setup();
     open();

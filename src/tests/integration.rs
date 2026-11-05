@@ -575,6 +575,12 @@ async fn recording_a_trade_moves_that_exchange_and_the_allocations_follow() {
         .find(|s| s["symbol"] == "BTC" && s["notes"] == "Binance")
         .unwrap();
     assert_eq!(binance["current_quantity"], 0.3);
+
+    // The CSV import's warning sees the one trade that went through.
+    let (status, activity) = send(&app, get("/api/portfolios/1/recorded_activity", &viewer)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(activity["trades"], 1);
+    assert!(activity["latest_at"].as_str().unwrap().ends_with('Z'));
 }
 
 #[tokio::test]
@@ -617,6 +623,12 @@ async fn moving_balance_needs_manage_and_keeps_the_total() {
     // 1.5 BTC at $10: 1.25 stays in Base, 0.25 moved; the total is unchanged.
     assert_eq!(btc_value("Base"), 12.5);
     assert_eq!(btc_value("RendaPassiva"), 2.5);
+
+    // The CSV import's warning counts moves too.
+    let (_, activity) = send(&app, get("/api/portfolios/1/recorded_activity", &manager)).await;
+    assert_eq!(activity["transfers"], 1);
+    assert_eq!(activity["trades"], 0);
+    assert!(activity["latest_at"].is_string());
 }
 
 #[tokio::test]
@@ -866,6 +878,7 @@ async fn a_non_member_gets_404_on_every_route_of_the_portfolio() {
         "/api/portfolios/1/barca/targets?market=BullMarket",
         "/api/portfolios/1/export_wallets",
         "/api/portfolios/1/sources",
+        "/api/portfolios/1/recorded_activity",
     ];
     for uri in gets {
         let (status, _) = send(&app, get(uri, &outsider)).await;

@@ -9,8 +9,8 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, TradeRecord, TransferRecord,
-    User, WalletPosition,
+    PortfolioSummary, PositionSource, RecordedActivity, RefreshToken, SourceChange,
+    TotalHistoryRow, TradeRecord, TransferRecord, User, WalletPosition,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -36,6 +36,23 @@ impl fmt::Display for UniqueViolation {
 }
 
 impl std::error::Error for UniqueViolation {}
+
+/// Returned (boxed) when a source changed between the read and the write of
+/// a `SourceChange` (another trade or import got there first). Nothing is
+/// written; the use case reads again and retries.
+#[derive(Debug)]
+pub struct StaleSource {
+    /// e.g. "BTC on Binance".
+    pub source: String,
+}
+
+impl fmt::Display for StaleSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} changed while saving", self.source)
+    }
+}
+
+impl std::error::Error for StaleSource {}
 
 /// The wallet ledger and the portfolio targets. Grouped in one trait
 /// because some writes must touch both tables in a single transaction.
@@ -79,22 +96,30 @@ pub trait PortfolioRepo: Send + Sync {
     ) -> RepoResult<()>;
 
     /// Logs `trade` and appends the ledger rows it changes (the traded
-    /// source, and the cash source if any), in one transaction.
+    /// source, and the cash source if any), in one transaction. Fails with
+    /// `StaleSource` and writes nothing if a source no longer holds the
+    /// quantity its change was worked out from.
     async fn record_trade(
         &self,
         portfolio: PortfolioId,
         trade: &TradeRecord,
-        new_entries: &[LedgerEntry],
+        changes: &[SourceChange],
     ) -> RepoResult<()>;
 
     /// Logs `transfer` and appends the two ledger rows it changes (the
-    /// source it left and the one it reached), in one transaction.
+    /// source it left and the one it reached), in one transaction, with the
+    /// same `StaleSource` check as `record_trade`.
     async fn record_transfer(
         &self,
         portfolio: PortfolioId,
         transfer: &TransferRecord,
-        new_entries: &[LedgerEntry],
+        changes: &[SourceChange],
     ) -> RepoResult<()>;
+
+    /// How many trades and moves the portfolio has recorded, and the latest
+    /// one's time.
+    async fn fetch_recorded_activity(&self, portfolio: PortfolioId)
+    -> RepoResult<RecordedActivity>;
 }
 
 #[async_trait]

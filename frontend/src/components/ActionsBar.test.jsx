@@ -1,7 +1,19 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionsBar } from "./ActionsBar";
+import { fetchRecordedActivity } from "../api/client";
+
+vi.mock("../api/client", () => ({ fetchRecordedActivity: vi.fn() }));
+vi.mock("../hooks/useCurrentPortfolio", () => ({ useCurrentPortfolio: () => ({ id: 2, name: "Spouse" }) }));
+
+beforeEach(() => {
+  fetchRecordedActivity.mockReset();
+  fetchRecordedActivity.mockResolvedValue({ trades: 0, transfers: 0, latest_at: null });
+});
+
+const csvFile = (savedAt) =>
+  new File(["symbol,group\nBTC,Core\n"], "wallet.csv", { type: "text/csv", lastModified: Date.parse(savedAt) });
 
 describe("ActionsBar", () => {
   it("hides Import Wallet CSV for a role that can't import", () => {
@@ -25,7 +37,63 @@ describe("ActionsBar", () => {
     const fileInput = document.querySelector('input[type="file"]');
     await user.upload(fileInput, file);
 
+    await waitFor(() => expect(onImport).toHaveBeenCalledWith(file));
+  });
+
+  it("asks first when the file is older than the latest recorded trade", async () => {
+    const user = userEvent.setup();
+    const onImport = vi.fn();
+    const onExport = vi.fn();
+    fetchRecordedActivity.mockResolvedValue({ trades: 1, latest_at: "2026-11-03T17:20:00.000Z" });
+    render(<ActionsBar importing={false} onImport={onImport} onExport={onExport} canImport={true} accountName="Spouse" />);
+
+    await user.upload(document.querySelector('input[type="file"]'), csvFile("2026-11-01T10:00:00Z"));
+
+    expect(await screen.findByRole("dialog", { name: "This file may undo trades or moves recorded in Spouse" })).toBeInTheDocument();
+    expect(screen.getByText(/move was recorded on 2026-11-03 14:20:00 \(BRT\), after wallet.csv was saved/)).toBeInTheDocument();
+    expect(fetchRecordedActivity).toHaveBeenCalledWith(2);
+    expect(onImport).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Export current CSV" }));
+    expect(onExport).toHaveBeenCalledTimes(1);
+    expect(onImport).not.toHaveBeenCalled();
+  });
+
+  it("imports an older file only when told to", async () => {
+    const user = userEvent.setup();
+    const onImport = vi.fn();
+    fetchRecordedActivity.mockResolvedValue({ trades: 1, latest_at: "2026-11-03T17:20:00.000Z" });
+    render(<ActionsBar importing={false} onImport={onImport} onExport={vi.fn()} canImport={true} accountName="Spouse" />);
+    const file = csvFile("2026-11-01T10:00:00Z");
+
+    await user.upload(document.querySelector('input[type="file"]'), file);
+    await user.click(await screen.findByRole("button", { name: "Import anyway into Spouse" }));
+
     expect(onImport).toHaveBeenCalledWith(file);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("imports a file saved after the latest trade without asking", async () => {
+    const user = userEvent.setup();
+    const onImport = vi.fn();
+    fetchRecordedActivity.mockResolvedValue({ trades: 1, latest_at: "2026-11-03T17:20:00.000Z" });
+    render(<ActionsBar importing={false} onImport={onImport} canImport={true} accountName="Spouse" />);
+    const file = csvFile("2026-11-04T09:00:00Z");
+
+    await user.upload(document.querySelector('input[type="file"]'), file);
+
+    await waitFor(() => expect(onImport).toHaveBeenCalledWith(file));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("asks when the recorded trades can't be checked", async () => {
+    const user = userEvent.setup();
+    fetchRecordedActivity.mockRejectedValue(new Error("offline"));
+    render(<ActionsBar importing={false} onImport={vi.fn()} canImport={true} accountName="Spouse" />);
+
+    await user.upload(document.querySelector('input[type="file"]'), csvFile("2026-11-04T09:00:00Z"));
+
+    expect(await screen.findByText(/Couldn't check the trades and moves recorded in Spouse/)).toBeInTheDocument();
   });
 
   it("does not call onImport when the file input is cleared without a selection", () => {

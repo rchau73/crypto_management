@@ -7,12 +7,12 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RefreshToken, TotalHistoryRow, TradeRecord, TransferRecord,
-    User, WalletPosition,
+    PortfolioSummary, PositionSource, RecordedActivity, RefreshToken, SourceChange,
+    TotalHistoryRow, TradeRecord, TransferRecord, User, WalletPosition,
 };
 use crate::domain::repository::{
     BarcaTargetRepo, NewUser, PortfolioDirectoryRepo, PortfolioRepo, RefreshTokenRepo, RepoError,
-    RepoResult, SnapshotRepo, UniqueViolation, UserRepo, UserUpdate,
+    RepoResult, SnapshotRepo, StaleSource, UniqueViolation, UserRepo, UserUpdate,
 };
 use async_trait::async_trait;
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -71,6 +71,49 @@ async fn insert_ledger_entries(
         .await?;
     }
     Ok(())
+}
+
+/// Appends each change's ledger row after checking its source still holds
+/// the quantity the change was worked out from (`StaleSource` otherwise).
+///
+/// Call it only once the transaction has written something: SQLite then
+/// holds the write lock, so no other writer can slip in between the check
+/// and the insert.
+async fn apply_source_changes(
+    tx: &mut Transaction<'_, Sqlite>,
+    portfolio: PortfolioId,
+    changes: &[SourceChange],
+) -> RepoResult<()> {
+    for change in changes {
+        let entry = &change.entry;
+        // The source's latest row, by the view's rule (migration 0013).
+        let now: Option<f64> = sqlx::query_scalar(
+            "SELECT COALESCE(current_quantity, 0.0) FROM wallet_allocations \
+             WHERE portfolio_id = ?1 AND symbol = ?2 AND group_name IS ?3 AND barca IS ?4 \
+               AND asset_class = ?5 AND COALESCE(notes, '') = COALESCE(?6, '') \
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(portfolio)
+        .bind(&entry.symbol)
+        .bind(&entry.group_name)
+        .bind(&entry.barca)
+        .bind(&entry.asset_class)
+        .bind(&entry.notes)
+        .fetch_optional(&mut **tx)
+        .await?;
+        // Exact comparison on purpose: `before` was read from this column.
+        if now.unwrap_or(0.0) != change.before {
+            return Err(Box::new(StaleSource {
+                source: format!(
+                    "{} on {}",
+                    entry.symbol,
+                    entry.notes.as_deref().unwrap_or("the unnamed source")
+                ),
+            }));
+        }
+    }
+    let entries: Vec<LedgerEntry> = changes.iter().map(|c| c.entry.clone()).collect();
+    insert_ledger_entries(tx, portfolio, &entries).await
 }
 
 #[async_trait]
@@ -192,9 +235,11 @@ impl PortfolioRepo for SqliteRepo {
         &self,
         portfolio: PortfolioId,
         trade: &TradeRecord,
-        new_entries: &[LedgerEntry],
+        changes: &[SourceChange],
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await?;
+        // The log row goes first: it takes the write lock before the
+        // sources are checked (see apply_source_changes).
         sqlx::query(
             "INSERT INTO trades \
              (portfolio_id, side, symbol, group_name, barca, asset_class, source, quantity, \
@@ -216,7 +261,7 @@ impl PortfolioRepo for SqliteRepo {
         .bind(trade.recorded_by)
         .execute(&mut *tx)
         .await?;
-        insert_ledger_entries(&mut tx, portfolio, new_entries).await?;
+        apply_source_changes(&mut tx, portfolio, changes).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -225,9 +270,11 @@ impl PortfolioRepo for SqliteRepo {
         &self,
         portfolio: PortfolioId,
         transfer: &TransferRecord,
-        new_entries: &[LedgerEntry],
+        changes: &[SourceChange],
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await?;
+        // The log row goes first: it takes the write lock before the
+        // sources are checked (see apply_source_changes).
         sqlx::query(
             "INSERT INTO transfers \
              (portfolio_id, symbol, asset_class, from_group_name, from_barca, from_source, \
@@ -248,9 +295,32 @@ impl PortfolioRepo for SqliteRepo {
         .bind(transfer.recorded_by)
         .execute(&mut *tx)
         .await?;
-        insert_ledger_entries(&mut tx, portfolio, new_entries).await?;
+        apply_source_changes(&mut tx, portfolio, changes).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn fetch_recorded_activity(
+        &self,
+        portfolio: PortfolioId,
+    ) -> RepoResult<RecordedActivity> {
+        let (trades, transfers, latest_at): (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT \
+                 (SELECT COUNT(*) FROM trades WHERE portfolio_id = ?1), \
+                 (SELECT COUNT(*) FROM transfers WHERE portfolio_id = ?1), \
+                 (SELECT MAX(created_at) FROM ( \
+                     SELECT created_at FROM trades WHERE portfolio_id = ?1 \
+                     UNION ALL \
+                     SELECT created_at FROM transfers WHERE portfolio_id = ?1))",
+        )
+        .bind(portfolio)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(RecordedActivity {
+            trades,
+            transfers,
+            latest_at,
+        })
     }
 }
 
@@ -672,6 +742,15 @@ impl UserRepo for SqliteRepo {
             .execute(&mut *tx)
             .await?;
         sqlx::query("UPDATE barca_targets SET updated_by = NULL WHERE updated_by = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        // The trades and moves logs keep each entry, without who recorded it.
+        sqlx::query("UPDATE trades SET recorded_by = NULL WHERE recorded_by = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE transfers SET recorded_by = NULL WHERE recorded_by = ?1")
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -1428,6 +1507,17 @@ mod tests {
         repo.replace_barca_targets(PORTFOLIO, "BullMarket", &[barca("Base", 100.0)], Some(id))
             .await
             .unwrap();
+        // trades.recorded_by references users(id) too.
+        repo.record_trade(
+            PORTFOLIO,
+            &trade_record("BTC", Some(id)),
+            &[SourceChange {
+                entry: entry("BTC", 1.0, Some("Binance")),
+                before: 0.0,
+            }],
+        )
+        .await
+        .unwrap();
 
         assert!(repo.delete_user(id).await.unwrap());
 
@@ -1439,10 +1529,63 @@ mod tests {
                 .is_none()
         );
         assert_eq!(repo.target_of("BTC").await, Some(100.0), "targets are kept");
+        let recorded_by: Option<i64> = sqlx::query_scalar("SELECT recorded_by FROM trades")
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+        assert_eq!(recorded_by, None, "the trade is kept, without its author");
         assert!(
             !repo.delete_user(id).await.unwrap(),
             "second delete finds nothing"
         );
+    }
+
+    fn trade_record(symbol: &str, recorded_by: Option<i64>) -> TradeRecord {
+        TradeRecord {
+            side: crate::domain::models::TradeSide::Buy,
+            symbol: symbol.to_string(),
+            group_name: Some("Core".to_string()),
+            barca: Some("Base".to_string()),
+            asset_class: "crypto".to_string(),
+            source: Some("Binance".to_string()),
+            quantity: 1.0,
+            price: 1.0,
+            cash_symbol: None,
+            cash_source: None,
+            cash_quantity: None,
+            recorded_by,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_change_worked_out_from_a_stale_quantity_writes_nothing() {
+        let repo = test_repo().await;
+        repo.append_ledger_entries(PORTFOLIO, &[entry("BTC", 0.5, Some("Binance"))])
+            .await
+            .unwrap();
+        let change = |before| SourceChange {
+            entry: entry("BTC", 0.7, Some("Binance")),
+            before,
+        };
+
+        // Worked out from 0.4, but the source holds 0.5 now.
+        let err = repo
+            .record_trade(PORTFOLIO, &trade_record("BTC", None), &[change(0.4)])
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<StaleSource>().is_some(), "{err}");
+        let trades: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trades")
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+        assert_eq!(trades, 0, "the log row is rolled back too");
+
+        // From the right quantity it goes through.
+        repo.record_trade(PORTFOLIO, &trade_record("BTC", None), &[change(0.5)])
+            .await
+            .unwrap();
+        let sources = repo.fetch_position_sources(PORTFOLIO).await.unwrap();
+        assert_eq!(sources[0].current_quantity, 0.7);
     }
 
     #[tokio::test]

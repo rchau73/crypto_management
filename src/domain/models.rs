@@ -90,6 +90,15 @@ pub struct LedgerEntry {
     pub notes: Option<String>,
 }
 
+/// A ledger row worked out from a source's quantity at the time it was read
+/// (`before`, 0 for a new source). The write checks the source still holds
+/// `before`, so two writes at once can't both start from the same quantity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceChange {
+    pub entry: LedgerEntry,
+    pub before: f64,
+}
+
 /// One row of the `wallet_allocations_current` view: the latest quantity of
 /// every source for a key, summed, plus that key's target percent.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
@@ -142,6 +151,17 @@ impl PositionSource {
             asset_class: self.asset_class.clone(),
         }
     }
+}
+
+/// What "Record trade" and "Move balance" have written to a portfolio, so
+/// the import can warn that an older CSV would put back the balances from
+/// before.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct RecordedActivity {
+    pub trades: i64,
+    pub transfers: i64,
+    /// When the latest one was recorded (UTC, ISO 8601), if any.
+    pub latest_at: Option<String>,
 }
 
 /// Whether a recorded trade added to the position or took from it.

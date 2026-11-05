@@ -67,7 +67,7 @@ export function MoveBalanceDialog({ report, accountName, onClose, onMoved }) {
   const origin = origins.find((o) => o.id === originId) ?? origins[0] ?? null;
   const held = origin?.current_quantity ?? 0;
   const barca = barcaPick ?? origin?.barca ?? "";
-  const group = groupText ?? defaultGroup(all, symbol, barca);
+  const group = groupText ?? defaultGroup(all, symbol, barca, origin);
   // Same exchange by default: a BARCA move usually stays where it is.
   const exchange = exchangeText ?? sourceName(origin?.notes);
 
@@ -75,7 +75,7 @@ export function MoveBalanceDialog({ report, accountName, onClose, onMoved }) {
   const received = receivedText === null ? quantity : parsePositive(receivedText);
   const dest = origin
     ? destination(all, { symbol, assetClass: origin.asset_class, group, barca, exchange })
-    : { held: 0, newPosition: false };
+    : { held: 0, newPosition: false, group: group.trim(), exchange };
   const preview = previewMove({
     held,
     quantity,
@@ -84,6 +84,7 @@ export function MoveBalanceDialog({ report, accountName, onClose, onMoved }) {
     samePlace: origin !== null && isSamePlace(origin, { group, barca, exchange }),
     group,
     barca,
+    newPosition: dest.newPosition,
   });
   const price = priceOf(report.allocations || [], symbol);
   const shift =
@@ -127,7 +128,7 @@ export function MoveBalanceDialog({ report, accountName, onClose, onMoved }) {
       const fee = preview.fee > 0 ? ` (${formatQuantity(received)} arrived after the fee)` : "";
       const fresh = outcome?.new_position ? ` It's a new position with a 0% target; set it in Targets.` : "";
       onMoved({
-        message: `Moved in ${accountName}: ${formatQuantity(quantity)} ${symbol} from ${place(origin.barca, origin.group_name, origin.notes)} to ${place(barca, group.trim(), exchange)}${fee}.${fresh}`,
+        message: `Moved in ${accountName}: ${formatQuantity(quantity)} ${symbol} from ${place(origin.barca, origin.group_name, origin.notes)} to ${place(barca, dest.group, dest.exchange)}${fee}.${fresh}`,
       });
     } catch (err) {
       setSaveError(err.message);
@@ -239,7 +240,7 @@ export function MoveBalanceDialog({ report, accountName, onClose, onMoved }) {
                 </Typography>
               )}
               <Typography variant="body2">
-                {symbol} {place(barca, group.trim(), exchange)}: {formatQuantity(dest.held)} →{" "}
+                {symbol} {place(barca, dest.group, dest.exchange)}: {formatQuantity(dest.held)} →{" "}
                 {preview.toAfter === null ? "—" : formatQuantity(preview.toAfter)}
                 {dest.newPosition ? " (new position, 0% target: set it in Targets)" : ""}
               </Typography>

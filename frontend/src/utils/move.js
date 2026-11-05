@@ -6,6 +6,12 @@ import { formatQuantity, sourceName, sourceOptions } from "./trade";
 
 export const QUICK_PERCENTS = [10, 15, 25, 50, 100];
 
+// Names compare like the server does: surrounding spaces and capitals
+// don't make a different group, BARCA or exchange ("binance" is "Binance").
+function sameName(a, b) {
+  return (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+}
+
 function uniqueSorted(values) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
@@ -29,9 +35,12 @@ export function groupsIn(sources, barca) {
   return uniqueSorted(sources.filter((s) => s.barca === barca).map((s) => s.group_name));
 }
 
-// The group `symbol` already has in `barca`, else that BARCA's first group,
-// else the BARCA's own name (a BARCA with nothing in it yet).
-export function defaultGroup(sources, symbol, barca) {
+// Staying in the origin's BARCA keeps the origin's group, so changing only
+// the exchange really only changes the exchange. Otherwise: the group
+// `symbol` already has in `barca`, else that BARCA's first group, else the
+// BARCA's own name (a BARCA with nothing in it yet).
+export function defaultGroup(sources, symbol, barca, origin = null) {
+  if (origin && origin.barca === barca) return origin.group_name ?? "";
   const own = sources.find((s) => s.symbol === symbol && s.barca === barca && s.group_name);
   return own?.group_name ?? groupsIn(sources, barca)[0] ?? barca;
 }
@@ -41,25 +50,33 @@ export function exchangeNames(sources) {
   return uniqueSorted(sources.map((s) => sourceName(s.notes)));
 }
 
-// How much the destination source holds now, and whether its position
-// (symbol + group + BARCA) exists at all.
+// How much the destination source holds now, whether its position
+// (symbol + group + BARCA) exists at all, and the group and exchange as
+// stored (a typed "base" is the existing "Base").
 export function destination(sources, { symbol, assetClass, group, barca, exchange }) {
-  const position = sources.filter(
-    (s) => s.symbol === symbol && s.asset_class === assetClass && (s.group_name || "") === group.trim() && (s.barca || "") === barca
-  );
-  const source = position.find((s) => sourceName(s.notes) === sourceName(exchange));
-  return { held: source?.current_quantity ?? 0, newPosition: position.length === 0 };
+  const ofAsset = sources.filter((s) => s.symbol === symbol && s.asset_class === assetClass);
+  const exact = ofAsset.filter((s) => (s.group_name || "") === group.trim() && (s.barca || "") === barca);
+  const position = exact.length ? exact : ofAsset.filter((s) => sameName(s.group_name, group) && sameName(s.barca, barca));
+  const source =
+    position.find((s) => sourceName(s.notes) === sourceName(exchange)) ??
+    position.find((s) => sameName(s.notes, exchange));
+  return {
+    held: source?.current_quantity ?? 0,
+    newPosition: position.length === 0,
+    group: position[0]?.group_name ?? group.trim(),
+    exchange: source ? sourceName(source.notes) : sourceName(exchange),
+  };
 }
 
 export function isSamePlace(origin, { group, barca, exchange }) {
-  return (
-    (origin.group_name || "") === group.trim() && (origin.barca || "") === barca && sourceName(origin.notes) === sourceName(exchange)
-  );
+  return sameName(origin.group_name, group) && sameName(origin.barca, barca) && sameName(origin.notes, exchange);
 }
 
 // The preview and what to fix before sending. `received` defaults to
 // `quantity` (no fee).
-export function previewMove({ held, quantity, received, destHeld, samePlace, group, barca }) {
+// `newPosition`: only a new position needs a group (an existing one may
+// have been imported without one).
+export function previewMove({ held, quantity, received, destHeld, samePlace, group, barca, newPosition = true }) {
   const arrives = received ?? quantity;
   const problems = [];
   if (quantity === null) problems.push("Enter a quantity above 0.");
@@ -70,7 +87,7 @@ export function previewMove({ held, quantity, received, destHeld, samePlace, gro
   }
   else if (quantity !== null && received > quantity + 1e-9) problems.push("You can't receive more than you sent.");
   if (!barca) problems.push("Pick the destination BARCA.");
-  if (!group.trim()) problems.push("Name the destination group.");
+  if (newPosition && !group.trim()) problems.push("Name the destination group.");
   if (samePlace && quantity !== null) problems.push("The destination is the same as the origin.");
   return {
     fromAfter: quantity === null ? null : Math.max(0, held - quantity),
