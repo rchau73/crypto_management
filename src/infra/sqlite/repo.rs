@@ -243,8 +243,9 @@ impl PortfolioRepo for SqliteRepo {
         sqlx::query(
             "INSERT INTO trades \
              (portfolio_id, side, symbol, group_name, barca, asset_class, source, quantity, \
-              price, cash_symbol, cash_source, cash_quantity, recorded_by) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+              price, cash_symbol, cash_group_name, cash_barca, cash_source, cash_quantity, \
+              price_currency, price_in_currency, recorded_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         )
         .bind(portfolio)
         .bind(trade.side.as_str())
@@ -256,8 +257,12 @@ impl PortfolioRepo for SqliteRepo {
         .bind(trade.quantity)
         .bind(trade.price)
         .bind(&trade.cash_symbol)
+        .bind(&trade.cash_group_name)
+        .bind(&trade.cash_barca)
         .bind(&trade.cash_source)
         .bind(trade.cash_quantity)
+        .bind(&trade.price_currency)
+        .bind(trade.price_in_currency)
         .bind(trade.recorded_by)
         .execute(&mut *tx)
         .await?;
@@ -1551,8 +1556,12 @@ mod tests {
             quantity: 1.0,
             price: 1.0,
             cash_symbol: None,
+            cash_group_name: None,
+            cash_barca: None,
             cash_source: None,
             cash_quantity: None,
+            price_currency: None,
+            price_in_currency: None,
             recorded_by,
         }
     }

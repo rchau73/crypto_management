@@ -33,10 +33,60 @@ export function cashSources(sources) {
   return sourceOptions(sources.filter((s) => s.barca === CASH_BARCA));
 }
 
-// The cash source on the same exchange as the trade, else the biggest one.
-export function defaultCashSource(cashOptions, exchange) {
+// What can pay for a trade in `symbol` (or take a sell's proceeds): the
+// Caixa sources first, biggest first, then every other holding (e.g. BTC on
+// a SOL/BTC pair) by USD value, so 0.1 BTC comes before 30,000 of a small
+// coin. Never `symbol` itself. `isCash` marks Caixa. `allocations` gives
+// the live prices; an unpriced holding goes last.
+export function payOptions(sources, symbol, allocations = []) {
+  const others = sources.filter((s) => s.symbol !== symbol);
+  const value = (s) => s.current_quantity * (priceOf(allocations, s.symbol) ?? 0);
+  const holdings = sourceOptions(others.filter((s) => s.barca !== CASH_BARCA && s.current_quantity > 0)).sort(
+    (a, b) => value(b) - value(a)
+  );
+  return [
+    ...cashSources(others).map((s) => ({ ...s, isCash: true })),
+    ...holdings.map((s) => ({ ...s, isCash: false })),
+  ];
+}
+
+// The Caixa source on the same exchange as the trade, else the biggest
+// Caixa source. Another holding is never picked by default: paying with
+// BTC is a choice the user makes.
+export function defaultCashSource(options, exchange) {
+  const cash = options.filter((c) => c.isCash !== false);
   const wanted = sourceName(exchange).toLowerCase();
-  return cashOptions.find((c) => wanted && sourceName(c.notes).toLowerCase() === wanted) ?? cashOptions[0] ?? null;
+  return cash.find((c) => wanted && sourceName(c.notes).toLowerCase() === wanted) ?? cash[0] ?? null;
+}
+
+// The units the price can be typed in: the pay asset (the pair's quote, as
+// the exchange shows it: BTC for SOL/BTC, USDT for SOL/USDT) when it has a
+// live price to convert with, and USD.
+export function priceUnits(paySymbol, payPrice) {
+  return paySymbol && payPrice ? [paySymbol, "USD"] : ["USD"];
+}
+
+// One unit of the traded asset in `unit`, from the live USD prices (the
+// pre-filled price).
+export function livePriceIn(unit, assetPrice, payPrice) {
+  if (!assetPrice) return null;
+  if (unit === "USD") return assetPrice;
+  return payPrice ? assetPrice / payPrice : null;
+}
+
+// The USD price sent to the server for a price typed in `unit`.
+export function usdPrice(price, unit, payPrice) {
+  if (price === null) return null;
+  if (unit === "USD") return price;
+  return payPrice ? price * payPrice : null;
+}
+
+// Pay-asset units moved by the trade: exactly quantity × price when the
+// price is in the pay asset, else converted from USD at its live price.
+export function autoPayQuantity({ quantity, price, unit, payPrice }) {
+  if (quantity === null || price === null) return null;
+  if (unit !== "USD") return quantity * price;
+  return payPrice ? (quantity * price) / payPrice : null;
 }
 
 // Every position the dialog can trade, as "symbol in barca", without Caixa
@@ -75,7 +125,7 @@ export function inputNumber(n) {
 
 // The preview and the problems to fix before sending. `held`/`cashHeld`
 // are the chosen sources' current quantities (0 for a new exchange).
-export function previewTrade({ side, held, quantity, price, useCash, cashHeld, cashQuantity }) {
+export function previewTrade({ side, held, quantity, price, useCash, cashHeld, cashQuantity, cashSymbol = "" }) {
   const sign = side === "buy" ? 1 : -1;
   const problems = [];
   if (quantity === null) problems.push("Enter a quantity above 0.");
@@ -86,11 +136,11 @@ export function previewTrade({ side, held, quantity, price, useCash, cashHeld, c
   if (useCash) {
     // Until there's a total, the missing quantity/price is the problem.
     if (cashQuantity === null) {
-      if (quantity !== null && price !== null) problems.push("Enter the cash moved, above 0.");
+      if (quantity !== null && price !== null) problems.push(`Enter the ${cashSymbol || "cash"} moved, above 0.`);
     }
     else {
       newCash = cashHeld - sign * cashQuantity;
-      if (newCash < -1e-9) problems.push(`The cash source holds only ${formatQuantity(cashHeld)}.`);
+      if (newCash < -1e-9) problems.push(`That ${cashSymbol || "cash"} source holds only ${formatQuantity(cashHeld)}.`);
     }
   }
   return {
@@ -112,13 +162,15 @@ function ref(source, exchange) {
 }
 
 // The POST /trades body. `asset`: the chosen source (or, for a new
-// exchange, any source of the position plus `exchange`).
-export function buildTradeRequest({ side, asset, exchange, quantity, price, cash, cashQuantity }) {
+// exchange, any source of the position plus `exchange`). `price` is USD;
+// `quote` is the price as typed when it wasn't in USD ({ currency, price }).
+export function buildTradeRequest({ side, asset, exchange, quantity, price, cash, cashQuantity, quote = null }) {
   return {
     side,
     asset: ref(asset, exchange),
     quantity,
     price,
     cash: cash ? { position: ref(cash, cash.notes), quantity: cashQuantity } : null,
+    quote,
   };
 }

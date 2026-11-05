@@ -41,7 +41,10 @@ erDiagram
         string source "exchange = the ledger's notes"
         float quantity
         float price "fill price, USD"
-        string cash_symbol "nullable"
+        string price_currency "price as shown: USD or the pay asset, e.g. BTC"
+        float price_in_currency "e.g. 0.00105 BTC per SOL"
+        string cash_symbol "what paid: Caixa cash or any holding (nullable)"
+        string cash_barca "plus cash_group_name, cash_source"
         float cash_quantity "nullable"
         int recorded_by "user id"
         string created_at
@@ -162,7 +165,7 @@ erDiagram
     }
 
     WALLET_ALLOCATIONS }o..|| WALLET_ALLOCATIONS_CURRENT : "aggregated (latest per group)"
-    TRADES ||..|{ WALLET_ALLOCATIONS : "Record trade appends the asset (and cash) rows"
+    TRADES ||..|{ WALLET_ALLOCATIONS : "Record trade appends the asset (and pay-side) rows"
     TRANSFERS ||..|{ WALLET_ALLOCATIONS : "Move balance appends the origin and destination rows"
     CRYPTO }o..|| WALLET_ALLOCATIONS_CURRENT : "priced by symbol at request time"
     WALLET_ALLOCATIONS_CURRENT ||..o{ ALLOCATIONS : "computed result persisted as JSON audit"
