@@ -6,9 +6,12 @@
 use crate::api::AppState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::portfolios::PortfolioScope;
-use crate::domain::models::{BarcaTarget, NewBarcaTarget, PricedReport, WalletPosition};
+use crate::domain::models::{
+    BarcaTarget, NewBarcaTarget, PositionSource, PricedReport, RecordedActivity, WalletPosition,
+};
 use crate::usecases::history_service::HistoryLevel;
 use crate::usecases::targets_service::{QuantityCorrection, TargetRow};
+use crate::usecases::trade_service::{TradeOutcome, TradeRequest};
 use crate::usecases::wallet_import::ImportSummary;
 use axum::Json;
 use axum::extract::{Multipart, Query, State};
@@ -95,6 +98,40 @@ pub async fn correct_quantity(
         .await?;
     info!(new_quantity, "Corrected position quantity");
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Every source (exchange/wallet) of every position, with its quantity.
+pub async fn list_sources(
+    scope: PortfolioScope,
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<PositionSource>>> {
+    Ok(Json(state.trades.list_sources(scope.portfolio).await?))
+}
+
+/// How many trades were recorded in the app and when the latest was, so the
+/// CSV import can warn before an older file puts the old balances back.
+pub async fn recorded_activity(
+    scope: PortfolioScope,
+    State(state): State<AppState>,
+) -> ApiResult<Json<RecordedActivity>> {
+    Ok(Json(state.trades.recorded_activity(scope.portfolio).await?))
+}
+
+/// "Record trade": a buy or sell made on an exchange, and the cash it
+/// moved, written straight into the wallet (no CSV round trip).
+#[tracing::instrument(skip_all, fields(user_id = scope.user.user_id, portfolio_id = %scope.portfolio, symbol = %payload.asset.symbol))]
+pub async fn record_trade(
+    scope: PortfolioScope,
+    State(state): State<AppState>,
+    Json(payload): Json<TradeRequest>,
+) -> ApiResult<Json<TradeOutcome>> {
+    scope.require_manage()?;
+    Ok(Json(
+        state
+            .trades
+            .record(scope.portfolio, payload, Some(scope.user.user_id))
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]

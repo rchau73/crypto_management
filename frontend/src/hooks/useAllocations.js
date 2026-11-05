@@ -135,5 +135,7 @@ export function useAllocations() {
     usdBrl,
     importFromCsv,
     exportToCsv,
+    // Re-reads the report now, e.g. right after a trade was recorded.
+    reload: refresh,
   };
 }

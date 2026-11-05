@@ -107,6 +107,7 @@ Source: [`docs/data-model.mmd`](docs/data-model.mmd)
 - **`CRYPTO`** — live market data from CoinMarketCap; never persisted directly, only joined by `symbol` against `wallet_allocations_current` at request time inside `compute_allocations`.
 - **`history_assets` / `history_groups` / `history_barca` / `history_totals`** — one snapshot batch per `timestamp`, written together by `SnapshotRepo::record_snapshot` every time the shared prices refresh (one batch per portfolio that holds anything).
 - **`asset_variance_history` / `group_variance_history` / `barca_variance_history`** (views) — add `deviation_percent` (and, for assets, `value_deviation`) on top of the raw snapshots; these are what `/api/history` actually serves.
+- **`trades`** — one row per trade recorded in the app (**Rebalance → Record trade**): side, quantity, fill price, exchange (`source` = the ledger's `notes`), the cash moved and who recorded it. The quantity change itself is a normal `wallet_allocations` row written in the same transaction.
 - **`allocations`** — audit trail of the full computed JSON payload per run, independent of the per-row snapshots.
 - **`users`** — one row per account (`username`, an argon2id `password_hash`, and a `role` of `admin`/`manager`/`user`). No public sign-up endpoint exists anywhere — every row is created by an Admin via the Admin tab, except the one bootstrap Admin seeded from env vars on first boot.
 - **`refresh_tokens`** — one row per login. Stores only a SHA-256 hash of the opaque token the client actually holds, so a database leak alone can't be used to forge a session; `revoked_at` is set on logout.
@@ -261,6 +262,14 @@ Once you have data, the DB — not the CSV — is authoritative:
 - Both tabs share the same pattern: edit the table, a single **Save All** button submits the whole set atomically, and target percentages across the set must sum to exactly 100% or the save is rejected client- and server-side.
 - Re-importing the CSV (manually, or the automatic empty-DB seed) never overwrites an existing target — the CSV target is only used for brand-new positions. Quantities, on the other hand, come from the CSV (see below).
 
+### Recording a trade (no CSV round trip)
+
+After buying or selling on an exchange, open **Rebalance** and click **Record trade** on the step (or **Record a trade** for any asset). Pick the exchange, enter the quantity and your fill price, and optionally move the cash in Caixa (e.g. USDT on the same exchange). The app adds a ledger row for that exchange only (old quantity ± traded quantity), plus one for the cash source, and logs the trade in `trades`, all in one transaction. A sell larger than that exchange holds is refused. Needs manage access to the account.
+
+Exchange, group and BARCA names are matched with surrounding spaces ignored, and a typed exchange name matches an existing one whatever its capitals ("binance" is your "Binance"). Each save checks, inside its transaction, that the sources still hold what it read; if another save got there first (a second tab), it reads again and retries, and after three tries it answers 409 so you can check and save again. No trade is ever counted on top of a stale quantity.
+
+Those quantities now live only in the DB. **Export Wallet CSV** before editing the CSV again. Re-importing an older file doesn't just overwrite them, it can **double-count**: every source the file lists goes back to the file's quantity, while a source it doesn't list (a buy on a new exchange) is kept. For example, a buy on a new exchange paid with USDT keeps the new coins *and* gets the USDT back. So when the chosen file was saved before the latest recorded trade, **Import CSV** first warns and offers **Export current CSV** (`GET /api/portfolios/{id}/recorded_activity` gives the trade count and the latest time).
+
 ### Manually re-importing the CSV
 
 ```bash
@@ -328,7 +337,7 @@ The frontend dashboard tab uses these APIs (with optional period bucketing) to p
 
 ## CSV vs. DB responsibilities
 
-Targets: the DB is authoritative once it has data — `wallet_allocations.csv` only sets the target of brand-new `(symbol, group, barca, asset_class)` combinations. Quantities: the CSV wins — a re-import appends a ledger row for every source whose quantity changed or that is new. Ongoing edits happen in the app itself: `target_percent` lives in the mutable `portfolio_targets`/`barca_targets` tables (edited via the Portfolio Targets/BARCA Targets tabs, see [above](#editable-portfolio-and-barca-targets)), and quantity/notes live in the append-only `wallet_allocations` ledger (updated by CSV import or, for a brand-new asset, the Portfolio Targets tab's "+ Add Asset"). See [Architecture](#architecture) for how the pieces fit together.
+Targets: the DB is authoritative once it has data — `wallet_allocations.csv` only sets the target of brand-new `(symbol, group, barca, asset_class)` combinations. Quantities: the CSV wins — a re-import appends a ledger row for every source whose quantity changed or that is new. Ongoing edits happen in the app itself: `target_percent` lives in the mutable `portfolio_targets`/`barca_targets` tables (edited via the Portfolio Targets/BARCA Targets tabs, see [above](#editable-portfolio-and-barca-targets)), and quantity/notes live in the append-only `wallet_allocations` ledger (updated by CSV import, by **Record trade** on the Rebalance page, or, for a brand-new asset, the Portfolio Targets tab's "+ Add Asset"). After recording trades, export the wallet CSV before editing it, so a re-import doesn't bring back old quantities. See [Architecture](#architecture) for how the pieces fit together.
 
 
 
