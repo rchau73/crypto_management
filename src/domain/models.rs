@@ -196,10 +196,18 @@ pub struct TradeRecord {
     pub quantity: f64,
     /// Fill price in USD.
     pub price: f64,
+    /// The position that paid (buy) or took the proceeds (sell): Caixa
+    /// cash, or any other holding (e.g. BTC on a SOL/BTC pair).
     pub cash_symbol: Option<String>,
+    pub cash_group_name: Option<String>,
+    pub cash_barca: Option<String>,
     pub cash_source: Option<String>,
-    /// Units of the cash asset spent (buy) or received (sell).
+    /// Units of the pay asset spent (buy) or received (sell).
     pub cash_quantity: Option<f64>,
+    /// The price as the exchange showed it: "USD" or the pay asset's symbol,
+    /// and the price in it (e.g. "BTC", 0.00105). `price` is always USD.
+    pub price_currency: Option<String>,
+    pub price_in_currency: Option<f64>,
     pub recorded_by: Option<i64>,
 }
 

@@ -112,8 +112,9 @@ impl SourceRef {
     }
 }
 
-/// The cash side of a trade: units of the cash asset (e.g. USDT in Caixa)
-/// spent on a buy or received from a sell.
+/// The pay side of a trade: units of the asset that paid for a buy or took
+/// a sell's proceeds. Usually cash in Caixa (USDT), but any other holding
+/// works, e.g. BTC on a SOL/BTC pair.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CashLeg {
     pub position: SourceRef,
@@ -129,6 +130,18 @@ pub struct TradeRequest {
     pub price: f64,
     #[serde(default)]
     pub cash: Option<CashLeg>,
+    /// The price as the exchange showed it, if not in USD: e.g. 0.00105 BTC
+    /// per SOL. Logged as is; `price` above is its USD value.
+    #[serde(default)]
+    pub quote: Option<Quote>,
+}
+
+/// A price in another currency than USD: the pay asset's symbol and the
+/// price of one unit of the traded asset in it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Quote {
+    pub currency: String,
+    pub price: f64,
 }
 
 /// The new quantities of the sources the trade changed.
@@ -205,10 +218,21 @@ impl TradeService {
         if let Some(cash) = &request.cash {
             cash.position.validate()?;
             check_positive("cash quantity", cash.quantity)?;
-            if cash.position.key() == request.asset.key() {
-                return Err(TradeError::Invalid(
-                    "the cash position must be a different position from the one traded".into(),
-                ));
+            if cash.position.symbol == request.asset.symbol {
+                return Err(TradeError::Invalid(format!(
+                    "{} can't pay for {0}: pick another holding",
+                    request.asset.symbol
+                )));
+            }
+        }
+        if let Some(quote) = &request.quote {
+            check_positive("quoted price", quote.price)?;
+            let pays = request.cash.as_ref().map(|c| c.position.symbol.as_str());
+            if quote.currency.trim() != "USD" && Some(quote.currency.trim()) != pays {
+                return Err(TradeError::Invalid(format!(
+                    "the price can be in USD or in the asset that pays, not {}",
+                    quote.currency
+                )));
             }
         }
 
@@ -231,6 +255,7 @@ impl TradeService {
                         quantity = trade.quantity,
                         price = trade.price,
                         cash_symbol = trade.cash_symbol.as_deref().unwrap_or(""),
+                        price_currency = trade.price_currency.as_deref().unwrap_or("USD"),
                         attempt,
                         "Recorded trade"
                     );
@@ -429,8 +454,15 @@ fn plan_trade(
         quantity: request.quantity,
         price: request.price,
         cash_symbol: cash.as_ref().map(|c| c.entry.symbol.clone()),
+        cash_group_name: cash.as_ref().and_then(|c| c.entry.group_name.clone()),
+        cash_barca: cash.as_ref().and_then(|c| c.entry.barca.clone()),
         cash_source: cash.as_ref().and_then(|c| c.entry.notes.clone()),
         cash_quantity: request.cash.as_ref().map(|c| c.quantity),
+        price_currency: request
+            .quote
+            .as_ref()
+            .map(|q| q.currency.trim().to_string()),
+        price_in_currency: request.quote.as_ref().map(|q| q.price),
         recorded_by,
     };
     let mut changes = vec![asset];
@@ -629,6 +661,7 @@ mod tests {
             quantity,
             price,
             cash: None,
+            quote: None,
         }
     }
 
@@ -915,6 +948,97 @@ mod tests {
             service.record(PORTFOLIO, wrong_barca, None).await,
             Err(TradeError::NotFound(_))
         ));
+    }
+
+    fn paid_with_btc(side: TradeSide, btc: f64, btc_per_syrup: f64) -> TradeRequest {
+        TradeRequest {
+            side,
+            cash: Some(CashLeg {
+                position: at("BTC", "Base", Some("Binance")),
+                quantity: btc,
+            }),
+            quote: Some(Quote {
+                currency: "BTC".into(),
+                price: btc_per_syrup,
+            }),
+            // 0.00001 BTC at $40,000 = $0.40 per SYRUP.
+            ..buy(at("SYRUP", "Altcoins", None), 100.0, 0.4)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_buy_can_be_paid_with_btc_and_the_pair_price_is_logged() {
+        let (service, repo) = service().await;
+        let outcome = service
+            .record(
+                PORTFOLIO,
+                paid_with_btc(TradeSide::Buy, 0.001, 0.00001),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.asset_quantity, 110.0);
+        assert_eq!(held(&repo, "SYRUP", "").await, Some(110.0));
+        assert_eq!(held(&repo, "BTC", "Binance").await, Some(0.499));
+        assert_eq!(held(&repo, "BTC", "Ledger").await, Some(1.0));
+
+        let row: (String, String, String, String, f64, f64) = sqlx::query_as(
+            "SELECT cash_symbol, cash_barca, cash_source, price_currency, price_in_currency, price \
+             FROM trades",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "BTC".into(),
+                "Base".into(),
+                "Binance".into(),
+                "BTC".into(),
+                0.00001,
+                0.4
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sell_can_put_the_proceeds_in_btc() {
+        let (service, repo) = service().await;
+        let request = TradeRequest {
+            quantity: 10.0,
+            ..paid_with_btc(TradeSide::Sell, 0.0001, 0.00001)
+        };
+        service.record(PORTFOLIO, request, None).await.unwrap();
+        assert_eq!(held(&repo, "SYRUP", "").await, Some(0.0));
+        assert_eq!(held(&repo, "BTC", "Binance").await, Some(0.5001));
+    }
+
+    #[tokio::test]
+    async fn too_little_btc_or_a_foreign_quote_is_refused_and_writes_nothing() {
+        let (service, repo) = service().await;
+        // Binance holds 0.5 BTC.
+        let err = service
+            .record(PORTFOLIO, paid_with_btc(TradeSide::Buy, 0.6, 0.006), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, TradeError::Invalid(m) if m.contains("Binance holds 0.5 BTC")),
+            "{err}"
+        );
+        // The price is in BTC or USD, not in some third asset.
+        let mut request = paid_with_btc(TradeSide::Buy, 0.001, 0.00001);
+        request.quote = Some(Quote {
+            currency: "ETH".into(),
+            price: 0.0002,
+        });
+        assert!(matches!(
+            service.record(PORTFOLIO, request, None).await,
+            Err(TradeError::Invalid(_))
+        ));
+        assert_eq!(held(&repo, "SYRUP", "").await, Some(10.0));
+        assert_eq!(held(&repo, "BTC", "Binance").await, Some(0.5));
+        assert_eq!(trade_count(&repo).await, 0);
     }
 
     #[tokio::test]

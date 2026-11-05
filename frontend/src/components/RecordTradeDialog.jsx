@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  ListSubheader,
   MenuItem,
   Stack,
   TextField,
@@ -21,27 +22,41 @@ import { recordTrade } from "../api/client";
 import { usePositionSources } from "../hooks/usePositionSources";
 import { useCurrentPortfolio } from "../hooks/useCurrentPortfolio";
 import { formatNumber } from "../utils/formatters";
+import { barcaShift } from "../utils/move";
 import {
   NEW_SOURCE,
   assetSources,
+  autoPayQuantity,
   buildTradeRequest,
-  cashSources,
   defaultCashSource,
   formatQuantity,
   inputNumber,
+  livePriceIn,
   parsePositive,
+  payOptions,
   previewTrade,
   priceOf,
+  priceUnits,
   sourceLabel,
   sourceName,
   tradablePositions,
+  usdPrice,
 } from "../utils/trade";
+
+function payLabel(c) {
+  return `${c.symbol} · ${c.barca} · ${sourceLabel(c.notes)} — ${formatQuantity(c.current_quantity)}`;
+}
 
 // "Record trade": a buy or sell already made on an exchange, written into
 // this account's wallet (no CSV round trip). `preset` comes from a round
 // step ({ side, symbol, barca, amount, stepId }) or is null for "any
 // position". Mount it only while open, so every opening starts fresh.
-export function RecordTradeDialog({ preset, allocations, accountName, onClose, onRecorded }) {
+//
+// The other side of the trade can be cash in Caixa or any other holding
+// (BTC on a SOL/BTC pair). The price is typed in the pair's quote (BTC, or
+// USDT) or in USD; the server always gets the USD price, plus the price as
+// typed. `barcaActual` (the report's BARCA values) feeds the BARCA shift.
+export function RecordTradeDialog({ preset, allocations, barcaActual = [], accountName, onClose, onRecorded }) {
   const { id: portfolioId } = useCurrentPortfolio();
   const { sources, error: loadError } = usePositionSources();
   const positions = useMemo(() => tradablePositions(allocations), [allocations]);
@@ -59,16 +74,20 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
   const [quantityText, setQuantityText] = useState(() =>
     preset && livePrice ? inputNumber(preset.amount / livePrice) : ""
   );
-  const [priceText, setPriceText] = useState(() => inputNumber(livePrice));
-  const [useCash, setUseCash] = useState(true);
+  // null = on when there is Caixa cash to default to.
+  const [useCash, setUseCash] = useState(null);
   const [cashId, setCashId] = useState(null);
-  // null = worked out from the total, until the user types their own.
+  // null = the pay asset when it has a live price, else USD.
+  const [unitPick, setUnitPick] = useState(null);
+  // null = the live price in the current unit, until the user types one.
+  const [priceText, setPriceText] = useState(null);
+  // null = worked out from quantity × price, until the user types their own.
   const [cashText, setCashText] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
 
   const options = useMemo(() => assetSources(sources || [], symbol, barca), [sources, symbol, barca]);
-  const cashOptions = useMemo(() => cashSources(sources || []), [sources]);
+  const payable = useMemo(() => payOptions(sources || [], symbol, allocations), [sources, symbol, allocations]);
   const chosenId = exchangeId ?? options[0]?.id ?? NEW_SOURCE;
   const isNew = chosenId === NEW_SOURCE;
   // A typed name that is an existing exchange ("binance" for "Binance") is
@@ -79,12 +98,18 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
   const exchange = isNew && !typedMatch ? newExchange : chosen?.notes;
   const held = chosen?.current_quantity ?? 0;
 
-  const cash = cashOptions.find((c) => c.id === cashId) ?? defaultCashSource(cashOptions, exchange);
-  const cashOn = useCash && cash !== null;
+  const defaultCash = defaultCashSource(payable, exchange);
+  const cash = payable.find((c) => c.id === cashId) ?? defaultCash ?? payable[0] ?? null;
+  const cashOn = (useCash ?? defaultCash !== null) && cash !== null;
+  const payPrice = cashOn ? priceOf(allocations, cash.symbol) : null;
+  const units = priceUnits(cashOn ? cash.symbol : null, payPrice);
+  const unit = units.includes(unitPick) ? unitPick : units[0];
+
   const quantity = parsePositive(quantityText);
-  const price = parsePositive(priceText);
-  const cashPrice = cash ? priceOf(allocations, cash.symbol) : null;
-  const autoCash = quantity !== null && price !== null && cashPrice ? inputNumber((quantity * price) / cashPrice) : "";
+  const priceValue = priceText ?? inputNumber(livePriceIn(unit, livePrice, payPrice));
+  const price = parsePositive(priceValue);
+  const priceUsd = usdPrice(price, unit, payPrice);
+  const autoCash = cashOn ? inputNumber(autoPayQuantity({ quantity, price, unit, payPrice })) : "";
   const cashValue = cashText ?? autoCash;
   const cashQuantity = parsePositive(cashValue);
 
@@ -96,21 +121,50 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
     useCash: cashOn,
     cashHeld: cash?.current_quantity ?? 0,
     cashQuantity,
+    cashSymbol: cash?.symbol,
   });
   const problems = [...preview.problems];
   if (isNew && newExchange.trim() === "") problems.push("Name the new exchange.");
   // Every position has at least one source; none means the list is stale.
   const template = options[0] ?? null;
-  const ready = sources !== null && template !== null && problems.length === 0 && !saving;
+  const ready = sources !== null && template !== null && priceUsd !== null && problems.length === 0 && !saving;
   const verb = side === "buy" ? "buy" : "sell";
   const where = sourceLabel(exchange);
+  const priceShown = (p) => (unit === "USD" ? `$${formatNumber(p)}` : `${formatQuantity(p)} ${unit}`);
+
+  // Paying with (or selling into) a holding in another BARCA moves value
+  // between BARCAs: show the shares before and after.
+  const assetValue = quantity !== null && priceUsd !== null ? quantity * priceUsd : null;
+  const payValue = cashOn && cashQuantity !== null && payPrice ? cashQuantity * payPrice : null;
+  const shift =
+    assetValue !== null && payValue !== null && cash.barca !== barca
+      ? barcaShift(
+          { barcaActualAllocations: barcaActual },
+          side === "buy"
+            ? { fromBarca: cash.barca, toBarca: barca, sentValue: payValue, receivedValue: assetValue }
+            : { fromBarca: barca, toBarca: cash.barca, sentValue: assetValue, receivedValue: payValue }
+        )
+      : [];
 
   const changePosition = (value) => {
-    const [nextSymbol] = value.split("|");
     setPosition(value);
     setExchangeId(null);
     setQuantityText("");
-    setPriceText(inputNumber(priceOf(allocations, nextSymbol)));
+    setCashId(null);
+    setUnitPick(null);
+    setPriceText(null);
+    setCashText(null);
+  };
+  // A new pay asset changes the price unit, so the price starts over.
+  const changeCash = (id) => {
+    setCashId(id);
+    setUnitPick(null);
+    setPriceText(null);
+    setCashText(null);
+  };
+  const changeUnit = (value) => {
+    setUnitPick(value);
+    setPriceText(null);
     setCashText(null);
   };
 
@@ -125,21 +179,26 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
           asset: chosen ?? template,
           exchange,
           quantity,
-          price,
+          price: priceUsd,
           cash: cashOn ? cash : null,
           cashQuantity,
+          quote: unit === "USD" ? null : { currency: unit, price },
         })
       );
+      const at = unit === "USD" ? `$${formatNumber(priceUsd)}` : `${formatQuantity(price)} ${unit} (≈ $${formatNumber(priceUsd)})`;
       const cashPart = cashOn ? `, ${side === "buy" ? "paid with" : "into"} ${formatQuantity(cashQuantity)} ${cash.symbol}` : "";
       onRecorded({
         stepId: preset?.stepId ?? null,
-        message: `Recorded in ${accountName}: ${side === "buy" ? "bought" : "sold"} ${formatQuantity(quantity)} ${symbol} on ${where} at $${formatNumber(price)}${cashPart}.`,
+        message: `Recorded in ${accountName}: ${side === "buy" ? "bought" : "sold"} ${formatQuantity(quantity)} ${symbol} on ${where} at ${at}${cashPart}.`,
       });
     } catch (err) {
       setSaveError(err.message);
       setSaving(false);
     }
   };
+
+  const cashItems = payable.filter((c) => c.isCash);
+  const holdingItems = payable.filter((c) => !c.isCash);
 
   return (
     <Dialog open onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" aria-labelledby="record-trade-title">
@@ -214,71 +273,112 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
               />
             )}
 
+            <TextField
+              label={`Quantity (${symbol})`}
+              value={quantityText}
+              onChange={(e) => {
+                setQuantityText(e.target.value);
+                setCashText(null);
+              }}
+              slotProps={{ htmlInput: { inputMode: "decimal" } }}
+              helperText={preset ? `Pre-filled from the step: $${formatNumber(preset.amount)}` : " "}
+            />
+
+            <Box sx={{ borderTop: 1, borderColor: "divider", pt: 1 }}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={cashOn}
+                    disabled={payable.length === 0}
+                    onChange={(e) => setUseCash(e.target.checked)}
+                  />
+                }
+                label={
+                  payable.length === 0
+                    ? "Also move what paid (this account holds nothing else)"
+                    : side === "buy"
+                      ? "Also take what paid from my holdings"
+                      : "Also put the proceeds in my holdings"
+                }
+              />
+              {cashOn && (
+                <TextField
+                  select
+                  label={side === "buy" ? "Paid with" : "Proceeds to"}
+                  value={cash.id}
+                  onChange={(e) => changeCash(e.target.value)}
+                  helperText={cash.isCash ? "Cash in Caixa" : `A ${cash.symbol} holding in ${cash.barca}: its BARCA share changes too`}
+                  fullWidth
+                  sx={{ mt: 1 }}
+                >
+                  {cashItems.length > 0 && <ListSubheader>Cash (Caixa)</ListSubheader>}
+                  {cashItems.map((c) => (
+                    <MenuItem key={c.id} value={c.id}>
+                      {payLabel(c)}
+                    </MenuItem>
+                  ))}
+                  {holdingItems.length > 0 && <ListSubheader>Other holdings</ListSubheader>}
+                  {holdingItems.map((c) => (
+                    <MenuItem key={c.id} value={c.id}>
+                      {payLabel(c)}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              )}
+            </Box>
+
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <TextField
-                label={`Quantity (${symbol})`}
-                value={quantityText}
-                onChange={(e) => {
-                  setQuantityText(e.target.value);
-                  setCashText(null);
-                }}
-                slotProps={{ htmlInput: { inputMode: "decimal" } }}
-                helperText={preset ? `Pre-filled from the step: $${formatNumber(preset.amount)}` : " "}
-                fullWidth
-              />
-              <TextField
-                label="Price (USD)"
-                value={priceText}
+                label={`Price (${unit} per ${symbol})`}
+                value={priceValue}
                 onChange={(e) => {
                   setPriceText(e.target.value);
                   setCashText(null);
                 }}
                 slotProps={{ htmlInput: { inputMode: "decimal" } }}
-                helperText={livePrice ? `Live price $${formatNumber(livePrice)}; use your fill price` : "No live price; enter your fill price"}
+                helperText={
+                  unit !== "USD"
+                    ? priceUsd !== null
+                      ? `≈ $${formatNumber(priceUsd)} per ${symbol} at the live ${unit} price; use your fill price`
+                      : `Your fill price in ${unit}`
+                    : livePrice
+                      ? `Live price $${formatNumber(livePrice)}; use your fill price`
+                      : "No live price; enter your fill price"
+                }
                 fullWidth
               />
-            </Stack>
-            <Typography sx={{ fontVariantNumeric: "tabular-nums" }}>
-              Total: <strong>{preview.total === null ? "—" : `$${formatNumber(preview.total)}`}</strong>
-            </Typography>
-
-            <Box sx={{ borderTop: 1, borderColor: "divider", pt: 1 }}>
-              <FormControlLabel
-                control={<Checkbox checked={cashOn} disabled={cashOptions.length === 0} onChange={(e) => setUseCash(e.target.checked)} />}
-                label={
-                  cashOptions.length === 0
-                    ? "Also move the cash (this account has no Caixa position)"
-                    : side === "buy"
-                      ? "Also take the cash from Caixa"
-                      : "Also put the proceeds in Caixa"
-                }
-              />
-              {cashOn && (
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mt: 1 }}>
-                  <TextField
-                    select
-                    label="Cash"
-                    value={cash.id}
-                    onChange={(e) => setCashId(e.target.value)}
-                    fullWidth
-                  >
-                    {cashOptions.map((c) => (
-                      <MenuItem key={c.id} value={c.id}>
-                        {c.symbol} · {sourceLabel(c.notes)} — {formatQuantity(c.current_quantity)}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                  <TextField
-                    label={`${cash.symbol} ${side === "buy" ? "spent" : "received"}`}
-                    value={cashValue}
-                    onChange={(e) => setCashText(e.target.value)}
-                    slotProps={{ htmlInput: { inputMode: "decimal" } }}
-                    helperText={cashText === null ? "Worked out from the total; edit to include fees" : " "}
-                    fullWidth
-                  />
-                </Stack>
+              {units.length > 1 && (
+                <TextField
+                  select
+                  label="Price in"
+                  value={unit}
+                  onChange={(e) => changeUnit(e.target.value)}
+                  sx={{ minWidth: 120 }}
+                >
+                  {units.map((u) => (
+                    <MenuItem key={u} value={u}>
+                      {u}
+                    </MenuItem>
+                  ))}
+                </TextField>
               )}
-            </Box>
+            </Stack>
+            {cashOn && (
+              <TextField
+                label={`${cash.symbol} ${side === "buy" ? "spent" : "received"}`}
+                value={cashValue}
+                onChange={(e) => setCashText(e.target.value)}
+                slotProps={{ htmlInput: { inputMode: "decimal" } }}
+                helperText={cashText === null ? "Worked out from quantity × price; edit to include fees" : " "}
+              />
+            )}
+            <Typography sx={{ fontVariantNumeric: "tabular-nums" }}>
+              Total:{" "}
+              <strong>
+                {preview.total === null ? "—" : priceShown(preview.total)}
+                {unit !== "USD" && assetValue !== null ? ` (≈ $${formatNumber(assetValue)})` : ""}
+              </strong>
+            </Typography>
 
             <Box sx={{ bgcolor: "action.hover", borderRadius: 1, px: 1.5, py: 1, fontVariantNumeric: "tabular-nums" }} data-testid="trade-preview">
               <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
@@ -289,8 +389,14 @@ export function RecordTradeDialog({ preset, allocations, accountName, onClose, o
               </Typography>
               {cashOn && (
                 <Typography variant="body2">
-                  {cash.symbol} on {sourceLabel(cash.notes)}: {formatQuantity(cash.current_quantity)} →{" "}
+                  {cash.symbol}
+                  {cash.isCash ? "" : ` · ${cash.barca}`} on {sourceLabel(cash.notes)}: {formatQuantity(cash.current_quantity)} →{" "}
                   {preview.newCash === null ? "—" : formatQuantity(preview.newCash)}
+                </Typography>
+              )}
+              {shift.length > 0 && (
+                <Typography variant="body2" sx={{ color: "text.secondary", mt: 0.5 }}>
+                  {shift.map((s) => `${s.barca} ${formatNumber(s.before)}% → ${formatNumber(s.after)}%`).join(" · ")}
                 </Typography>
               )}
               {problems.map((p) => (

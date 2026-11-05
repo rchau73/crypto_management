@@ -100,6 +100,7 @@ export function RebalanceTab({
             }
           }
           allocations={report.allocations}
+          barcaActual={report.barcaActualAllocations}
           accountName={accountName}
           onClose={() => setRecording(undefined)}
           onRecorded={recorded}
