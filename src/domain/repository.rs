@@ -9,7 +9,7 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RecordedActivity, RefreshToken, SourceChange,
+    PortfolioSummary, PositionKey, PositionSource, RecordedActivity, RefreshToken, SourceChange,
     TotalHistoryRow, TradeRecord, TransferRecord, User, WalletPosition,
 };
 use async_trait::async_trait;
@@ -58,8 +58,16 @@ impl std::error::Error for StaleSource {}
 /// because some writes must touch both tables in a single transaction.
 #[async_trait]
 pub trait PortfolioRepo: Send + Sync {
-    /// One row per position key (the `wallet_allocations_current` view).
+    /// One row per position key (the `wallet_allocations_current` view),
+    /// without the positions the manager removed while they hold nothing.
     async fn fetch_positions(&self, portfolio: PortfolioId) -> RepoResult<Vec<WalletPosition>>;
+
+    /// Like `fetch_positions`, plus the removed ones (`removed: true`), for
+    /// the Portfolio Targets list.
+    async fn fetch_positions_including_removed(
+        &self,
+        portfolio: PortfolioId,
+    ) -> RepoResult<Vec<WalletPosition>>;
 
     /// The latest ledger row of every source, i.e. `fetch_positions`
     /// before the sources are summed.
@@ -75,13 +83,15 @@ pub trait PortfolioRepo: Send + Sync {
         entries: &[LedgerEntry],
     ) -> RepoResult<()>;
 
-    /// Replaces every target of the portfolio with `targets` and appends
-    /// `new_entries`, in one transaction.
+    /// Replaces every target of the portfolio with `targets`, appends
+    /// `new_entries` and marks `removed` as removed, in one transaction. A
+    /// position in `targets` that was removed is restored.
     async fn replace_targets(
         &self,
         portfolio: PortfolioId,
         targets: &[NewPortfolioTarget],
         new_entries: &[LedgerEntry],
+        removed: &[PositionKey],
         updated_by: Option<i64>,
     ) -> RepoResult<()>;
 

@@ -7,7 +7,7 @@
 use crate::domain::models::{
     AllocationSnapshot, AssetHistoryRow, BarcaHistoryRow, BarcaTarget, GroupHistoryRow,
     LedgerEntry, NewBarcaTarget, NewPortfolioTarget, PortfolioAccess, PortfolioId,
-    PortfolioSummary, PositionSource, RecordedActivity, RefreshToken, SourceChange,
+    PortfolioSummary, PositionKey, PositionSource, RecordedActivity, RefreshToken, SourceChange,
     TotalHistoryRow, TradeRecord, TransferRecord, User, WalletPosition,
 };
 use crate::domain::repository::{
@@ -69,8 +69,51 @@ async fn insert_ledger_entries(
         .bind(&entry.notes)
         .execute(&mut **tx)
         .await?;
+        // A removed position that holds something again shows up again.
+        if entry.current_quantity > 0.0 {
+            sqlx::query(
+                "DELETE FROM removed_positions \
+                 WHERE portfolio_id = ?1 AND symbol = ?2 AND group_name = COALESCE(?3, '') \
+                   AND barca = COALESCE(?4, '') AND asset_class = ?5",
+            )
+            .bind(portfolio)
+            .bind(&entry.symbol)
+            .bind(&entry.group_name)
+            .bind(&entry.barca)
+            .bind(&entry.asset_class)
+            .execute(&mut **tx)
+            .await?;
+        }
     }
     Ok(())
+}
+
+/// Every position of the portfolio, with `removed` set for the ones the
+/// manager removed. A removed position is only left out (unless
+/// `include_removed`) while it holds nothing, so a removal never hides money.
+async fn query_positions(
+    pool: &SqlitePool,
+    portfolio: PortfolioId,
+    include_removed: bool,
+) -> RepoResult<Vec<WalletPosition>> {
+    let rows = sqlx::query_as::<_, WalletPosition>(
+        "SELECT v.symbol, v.group_name, v.barca, v.asset_class, v.target_percent, \
+                v.current_quantity, v.last_price, v.notes, v.source_count, \
+                (r.id IS NOT NULL AND v.current_quantity <= 0) AS removed \
+         FROM wallet_allocations_current v \
+         LEFT JOIN removed_positions r \
+           ON r.portfolio_id = v.portfolio_id AND r.symbol = v.symbol \
+          AND r.group_name = COALESCE(v.group_name, '') AND r.barca = COALESCE(v.barca, '') \
+          AND r.asset_class = v.asset_class \
+         WHERE v.portfolio_id = ?1 \
+           AND (?2 OR r.id IS NULL OR v.current_quantity > 0) \
+         ORDER BY v.symbol, v.group_name, v.barca, v.asset_class",
+    )
+    .bind(portfolio)
+    .bind(include_removed)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 /// Appends each change's ledger row after checking its source still holds
@@ -119,17 +162,14 @@ async fn apply_source_changes(
 #[async_trait]
 impl PortfolioRepo for SqliteRepo {
     async fn fetch_positions(&self, portfolio: PortfolioId) -> RepoResult<Vec<WalletPosition>> {
-        let rows = sqlx::query_as::<_, WalletPosition>(
-            "SELECT symbol, group_name, barca, asset_class, target_percent, current_quantity, \
-                    last_price, notes, source_count \
-             FROM wallet_allocations_current \
-             WHERE portfolio_id = ?1 \
-             ORDER BY symbol, group_name, barca, asset_class",
-        )
-        .bind(portfolio)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+        query_positions(&self.pool, portfolio, false).await
+    }
+
+    async fn fetch_positions_including_removed(
+        &self,
+        portfolio: PortfolioId,
+    ) -> RepoResult<Vec<WalletPosition>> {
+        query_positions(&self.pool, portfolio, true).await
     }
 
     async fn fetch_position_sources(
@@ -174,6 +214,7 @@ impl PortfolioRepo for SqliteRepo {
         portfolio: PortfolioId,
         targets: &[NewPortfolioTarget],
         new_entries: &[LedgerEntry],
+        removed: &[PositionKey],
         updated_by: Option<i64>,
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await?;
@@ -182,6 +223,20 @@ impl PortfolioRepo for SqliteRepo {
             .execute(&mut *tx)
             .await?;
         for target in targets {
+            // A position with a target is in the list, so not removed (this
+            // is how a removed one is restored).
+            sqlx::query(
+                "DELETE FROM removed_positions \
+                 WHERE portfolio_id = ?1 AND symbol = ?2 AND group_name = ?3 \
+                   AND barca = ?4 AND asset_class = ?5",
+            )
+            .bind(portfolio)
+            .bind(&target.key.symbol)
+            .bind(&target.key.group_name)
+            .bind(&target.key.barca)
+            .bind(&target.key.asset_class)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query(
                 "INSERT INTO portfolio_targets \
                  (portfolio_id, symbol, group_name, barca, asset_class, target_percent, \
@@ -198,6 +253,21 @@ impl PortfolioRepo for SqliteRepo {
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
+        }
+        for key in removed {
+            sqlx::query(
+                "INSERT OR IGNORE INTO removed_positions \
+                 (portfolio_id, symbol, group_name, barca, asset_class, removed_by) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(portfolio)
+            .bind(&key.symbol)
+            .bind(&key.group_name)
+            .bind(&key.barca)
+            .bind(&key.asset_class)
+            .bind(updated_by)
+            .execute(&mut *tx)
+            .await?;
         }
         insert_ledger_entries(&mut tx, portfolio, new_entries).await?;
         tx.commit().await?;
@@ -901,7 +971,7 @@ mod tests {
         )
         .await
         .unwrap();
-        repo.replace_targets(PORTFOLIO, &[target("BTC", 40.0)], &[], None)
+        repo.replace_targets(PORTFOLIO, &[target("BTC", 40.0)], &[], &[], None)
             .await
             .unwrap();
 
@@ -952,12 +1022,122 @@ mod tests {
         assert_eq!(repo.fetch_positions(PORTFOLIO).await.unwrap().len(), 2);
     }
 
+    /// BTC held, ETH emptied and removed.
+    async fn with_eth_removed() -> std::sync::Arc<SqliteRepo> {
+        let repo = test_repo().await;
+        repo.append_ledger_entries(
+            PORTFOLIO,
+            &[entry("BTC", 1.0, None), entry("ETH", 0.0, None)],
+        )
+        .await
+        .unwrap();
+        repo.replace_targets(
+            PORTFOLIO,
+            &[target("BTC", 100.0)],
+            &[],
+            &[target("ETH", 0.0).key],
+            None,
+        )
+        .await
+        .unwrap();
+        repo
+    }
+
+    fn symbols(positions: &[WalletPosition]) -> Vec<&str> {
+        positions.iter().map(|p| p.symbol.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_removed_empty_position_is_hidden_but_listed_when_asked() {
+        let repo = with_eth_removed().await;
+
+        assert_eq!(
+            symbols(&repo.fetch_positions(PORTFOLIO).await.unwrap()),
+            ["BTC"]
+        );
+        let all = repo
+            .fetch_positions_including_removed(PORTFOLIO)
+            .await
+            .unwrap();
+        assert_eq!(symbols(&all), ["BTC", "ETH"]);
+        assert!(!all[0].removed);
+        assert!(all[1].removed);
+    }
+
+    #[tokio::test]
+    async fn a_removed_position_shows_up_again_once_it_holds_something() {
+        let repo = with_eth_removed().await;
+        repo.append_ledger_entries(PORTFOLIO, &[entry("ETH", 2.0, None)])
+            .await
+            .unwrap();
+
+        let positions = repo.fetch_positions(PORTFOLIO).await.unwrap();
+        assert_eq!(symbols(&positions), ["BTC", "ETH"]);
+        assert!(!positions[1].removed);
+
+        // The flag is gone, not just overridden: emptying it again doesn't
+        // hide it again.
+        repo.append_ledger_entries(PORTFOLIO, &[entry("ETH", 0.0, None)])
+            .await
+            .unwrap();
+        assert_eq!(
+            symbols(&repo.fetch_positions(PORTFOLIO).await.unwrap()),
+            ["BTC", "ETH"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_target_for_a_removed_position_restores_it() {
+        let repo = with_eth_removed().await;
+        repo.replace_targets(
+            PORTFOLIO,
+            &[target("BTC", 100.0), target("ETH", 0.0)],
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            symbols(&repo.fetch_positions(PORTFOLIO).await.unwrap()),
+            ["BTC", "ETH"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_save_does_not_remove_anything() {
+        let repo = test_repo().await;
+        repo.append_ledger_entries(
+            PORTFOLIO,
+            &[entry("BTC", 1.0, None), entry("ETH", 0.0, None)],
+        )
+        .await
+        .unwrap();
+        // A duplicate target fails the transaction that also removes ETH.
+        repo.replace_targets(
+            PORTFOLIO,
+            &[target("BTC", 50.0), target("BTC", 50.0)],
+            &[],
+            &[target("ETH", 0.0).key],
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            symbols(&repo.fetch_positions(PORTFOLIO).await.unwrap()),
+            ["BTC", "ETH"]
+        );
+    }
+
     #[tokio::test]
     async fn replace_targets_replaces_the_whole_set_and_appends_new_entries() {
         let repo = test_repo().await;
         repo.replace_targets(
             PORTFOLIO,
             &[target("BTC", 60.0), target("ETH", 40.0)],
+            &[],
             &[],
             None,
         )
@@ -967,6 +1147,7 @@ mod tests {
             PORTFOLIO,
             &[target("BTC", 100.0)],
             &[entry("BTC", 1.0, None)],
+            &[],
             None,
         )
         .await
@@ -984,7 +1165,7 @@ mod tests {
     #[tokio::test]
     async fn replace_targets_is_all_or_nothing() {
         let repo = test_repo().await;
-        repo.replace_targets(PORTFOLIO, &[target("BTC", 100.0)], &[], None)
+        repo.replace_targets(PORTFOLIO, &[target("BTC", 100.0)], &[], &[], None)
             .await
             .unwrap();
 
@@ -995,6 +1176,7 @@ mod tests {
                 PORTFOLIO,
                 &[target("ETH", 50.0), target("ETH", 50.0)],
                 &[entry("ETH", 1.0, None)],
+                &[],
                 None,
             )
             .await
@@ -1008,7 +1190,7 @@ mod tests {
     #[tokio::test]
     async fn import_positions_never_overwrites_an_existing_target() {
         let repo = test_repo().await;
-        repo.replace_targets(PORTFOLIO, &[target("BTC", 60.0)], &[], None)
+        repo.replace_targets(PORTFOLIO, &[target("BTC", 60.0)], &[], &[], None)
             .await
             .unwrap();
 
@@ -1093,6 +1275,7 @@ mod tests {
             PORTFOLIO,
             &[target("BTC", 100.0)],
             &[entry("BTC", 1.0, None)],
+            &[],
             None,
         )
         .await
@@ -1337,7 +1520,9 @@ mod tests {
         assert_eq!(repo.fetch_asset_history(other).await.unwrap().len(), 1);
 
         // Replacing one portfolio's targets doesn't delete the other's.
-        repo.replace_targets(other, &[], &[], None).await.unwrap();
+        repo.replace_targets(other, &[], &[], &[], None)
+            .await
+            .unwrap();
         assert_eq!(
             repo.fetch_positions(PORTFOLIO).await.unwrap()[0].target_percent,
             100.0
@@ -1392,8 +1577,7 @@ mod tests {
         use sqlx::Executor;
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         let migrator = sqlx::migrate!("./migrations");
-        let (before, migration_13): (Vec<_>, Vec<_>) =
-            migrator.iter().partition(|m| m.version < 13);
+        let (before, from_13): (Vec<_>, Vec<_>) = migrator.iter().partition(|m| m.version < 13);
         for migration in before {
             pool.execute(&*migration.sql).await.unwrap();
         }
@@ -1411,7 +1595,10 @@ mod tests {
         .await
         .unwrap();
 
-        pool.execute(&*migration_13[0].sql).await.unwrap();
+        // 0013, then the later ones the current queries rely on.
+        for migration in from_13 {
+            pool.execute(&*migration.sql).await.unwrap();
+        }
 
         let repo = SqliteRepo::new(pool);
         let positions = repo.fetch_positions(PortfolioId::FIRST).await.unwrap();
@@ -1506,7 +1693,7 @@ mod tests {
         repo.store_refresh_token(id, "token-hash", "2999-01-01T00:00:00Z")
             .await
             .unwrap();
-        repo.replace_targets(PORTFOLIO, &[target("BTC", 100.0)], &[], Some(id))
+        repo.replace_targets(PORTFOLIO, &[target("BTC", 100.0)], &[], &[], Some(id))
             .await
             .unwrap();
         repo.replace_barca_targets(PORTFOLIO, "BullMarket", &[barca("Base", 100.0)], Some(id))
