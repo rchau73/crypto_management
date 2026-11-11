@@ -387,7 +387,11 @@ impl WalletImportService {
         reader: impl Read,
     ) -> Result<ImportSummary, ImportError> {
         let csv = parse_rows(reader)?;
-        let positions = self.portfolio.fetch_positions(portfolio).await?;
+        // Removed positions included: one the CSV mentions is not new.
+        let positions = self
+            .portfolio
+            .fetch_positions_including_removed(portfolio)
+            .await?;
         let sources = self.portfolio.fetch_position_sources(portfolio).await?;
 
         let plan = plan_import(csv, &positions, &sources);
@@ -424,7 +428,12 @@ impl WalletImportService {
     /// `path`. Failures are logged, not fatal: the app works without a seed
     /// file.
     pub async fn seed_if_empty(&self, portfolio: PortfolioId, path: &str) {
-        match self.portfolio.fetch_positions(portfolio).await {
+        // A portfolio whose positions were all removed is not empty.
+        match self
+            .portfolio
+            .fetch_positions_including_removed(portfolio)
+            .await
+        {
             Ok(positions) if positions.is_empty() => {
                 match self.import_csv_file(portfolio, path).await {
                     Ok(summary) => tracing::info!(
@@ -808,6 +817,56 @@ mod tests {
             1
         );
         assert_eq!(repo.fetch_positions(PORTFOLIO).await.unwrap().len(), 2);
+    }
+
+    /// ETH emptied and removed in Portfolio Targets.
+    async fn with_eth_removed(repo: &SqliteRepo) {
+        repo.import_positions(PORTFOLIO, &[], &[entry("ETH", 0.0, None)])
+            .await
+            .unwrap();
+        let eth = PositionKey {
+            symbol: "ETH".into(),
+            group_name: "Core".into(),
+            barca: "Base".into(),
+            asset_class: "crypto".into(),
+        };
+        repo.replace_targets(PORTFOLIO, &[], &[], &[eth], None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_removed_position_in_the_csv_is_not_new_and_shows_up_with_a_quantity() {
+        let (repo, service) = setup().await;
+        with_eth_removed(&repo).await;
+        assert!(repo.fetch_positions(PORTFOLIO).await.unwrap().is_empty());
+
+        let csv = format!("{HEADER}ETH,Core,Base,0,2.0,,crypto\n");
+        let summary = service.import_csv(PORTFOLIO, csv.as_bytes()).await.unwrap();
+
+        assert_eq!(summary.positions_added, 0);
+        let positions = repo.fetch_positions(PORTFOLIO).await.unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].current_quantity, 2.0);
+    }
+
+    #[tokio::test]
+    async fn seed_if_empty_does_not_reseed_a_portfolio_whose_positions_were_removed() {
+        let (repo, service) = setup().await;
+        with_eth_removed(&repo).await;
+        let path = std::env::temp_dir().join(format!("seed-removed-{}.csv", std::process::id()));
+        std::fs::write(&path, format!("{HEADER}BTC,Core,Base,100,1.0,,crypto\n")).unwrap();
+
+        service
+            .seed_if_empty(PORTFOLIO, path.to_str().unwrap())
+            .await;
+        std::fs::remove_file(&path).ok();
+
+        let all = repo
+            .fetch_positions_including_removed(PORTFOLIO)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1, "BTC was not seeded");
     }
 
     #[tokio::test]
