@@ -453,6 +453,41 @@ async fn saving_portfolio_targets_needs_manager_and_a_valid_set() {
 }
 
 #[tokio::test]
+async fn a_new_brl_manual_position_shows_up_in_the_allocations_at_its_value() {
+    let app = default_app().await;
+    let manager = login(&app, "manager").await;
+    let (status, _) = send(
+        &app,
+        with_json(
+            "PUT",
+            "/api/portfolios/1/targets",
+            &manager,
+            json!({ "rows": [
+                { "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "target_percent": 60.0 },
+                { "symbol": "ETH", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "target_percent": 30.0 },
+                { "symbol": "Tesouro IPCA", "group_name": "Holding", "barca": "RendaFixa", "asset_class": "brl-manual",
+                  "target_percent": 10.0, "current_quantity": 50.0, "notes": "Broker" },
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, report) = send(&app, get("/api/portfolios/1/allocations", &manager)).await;
+    let bond = report["per_asset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["symbol"] == "Tesouro IPCA")
+        .expect("in Holdings");
+    // R$50 at PTAX 5.0 = $10, next to BTC $15 and ETH $10.
+    assert_eq!(bond["value"], 10.0);
+    assert_eq!(bond["barca"], "RendaFixa");
+    assert_eq!(report["total_value"], 35.0);
+    assert_eq!(report["unpriced"], json!([]));
+}
+
+#[tokio::test]
 async fn correcting_quantity_works_for_one_source_and_is_refused_for_several() {
     let app = default_app().await;
     let body = |symbol: &str, qty: f64| json!({ "symbol": symbol, "group_name": "Base", "barca": "Base", "asset_class": "crypto", "current_quantity": qty });

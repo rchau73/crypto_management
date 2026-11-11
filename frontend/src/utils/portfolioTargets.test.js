@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  ASSET_CLASSES,
+  ASSET_CLASS_HINTS,
   blankRow,
   canCorrectQuantity,
   filterRows,
   parseNonNegative,
+  quantityUnit,
   sortValue,
   toSavePayload,
   uniqueSorted,
@@ -140,5 +143,17 @@ describe("sortValue", () => {
   it("turns a missing text value into an empty string", () => {
     expect(sortValue({ notes: null }, "notes")).toBe("");
     expect(sortValue({ symbol: "BTC" }, "symbol")).toBe("BTC");
+  });
+});
+
+describe("quantityUnit", () => {
+  it("is R$ for brl-manual, whose quantity is its value in reais, and nothing otherwise", () => {
+    expect(quantityUnit("brl-manual")).toBe("R$");
+    expect(quantityUnit("br-equities")).toBe("");
+    expect(quantityUnit("crypto")).toBe("");
+  });
+
+  it("every asset class has a hint for the dropdown", () => {
+    for (const c of ASSET_CLASSES) expect(ASSET_CLASS_HINTS[c]).toBeTruthy();
   });
 });

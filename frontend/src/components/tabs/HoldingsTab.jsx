@@ -16,10 +16,12 @@ import {
   Typography,
 } from "@mui/material";
 import { SortableTableHead } from "../SortableTableHead";
+import { UnpricedAlert } from "../UnpricedAlert";
 import { DeviationBadge } from "../DeviationBadge";
 import { useSortableData } from "../../hooks/useSortableData";
 import { DEFAULT_VIEW, VIEWS, buildHoldingRows, filterHoldingRows } from "../../utils/holdings";
 import { formatNumber, formatPrice } from "../../utils/formatters";
+import { matchUnpriced } from "../../utils/unpriced";
 import { compactCellSx, numericCellSx, truncatedCellSx, zebraRowSx } from "../../styles/tableStyles";
 import { STATUS_COLORS } from "../../theme";
 
@@ -155,6 +157,8 @@ export function HoldingsTab({ report, params, onParamsChange }) {
     getValue: sortValue,
   });
 
+  const unpriced = report.unpriced || [];
+  const unpricedMatches = matchUnpriced(unpriced, query);
   const columns = columnsFor(view);
   const outCount = rows.filter((r) => r.status !== "in").length;
   const targetSum = rows.reduce((sum, r) => sum + r.targetPercent, 0);
@@ -225,6 +229,8 @@ export function HoldingsTab({ report, params, onParamsChange }) {
         )}
       </Typography>
 
+      <UnpricedAlert unpriced={unpriced} />
+
       <TableContainer component={Paper} sx={{ maxHeight: "70vh", overflowX: "auto" }}>
         <Table stickyHeader size="small" sx={{ minWidth: view === "position" ? 1100 : 900 }}>
           <SortableTableHead columns={columns} sortConfig={sortConfig} onSort={toggleSort} />
@@ -241,6 +247,10 @@ export function HoldingsTab({ report, params, onParamsChange }) {
                 <TableCell colSpan={columns.length} sx={{ py: 4, textAlign: "center", color: "text.secondary" }}>
                   No rows match{query ? ` “${query}”` : ""}
                   {outOfBandOnly ? " outside their band" : ""}.{" "}
+                  {unpricedMatches.length > 0 &&
+                    `${unpricedMatches.map((u) => u.symbol).join(", ")} ${unpricedMatches.length === 1 ? "is" : "are"} held but ${
+                      unpricedMatches.length === 1 ? "has" : "have"
+                    } no price (see the warning above). `}
                   <Button size="small" onClick={() => update({ q: "", out: "" })}>
                     Show all rows
                   </Button>

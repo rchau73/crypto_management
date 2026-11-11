@@ -38,6 +38,10 @@ pub enum AssetClass {
     Crypto,
     BrEquities,
     UsIndices,
+    /// Something with no market ticker (a fixed-income fund, a Tesouro
+    /// bond, cash in reais): the quantity *is* its value in BRL, so it is
+    /// priced at R$1 and converted with PTAX, without calling any API.
+    BrlManual,
 }
 
 impl AssetClass {
@@ -46,6 +50,7 @@ impl AssetClass {
             "crypto" => Some(AssetClass::Crypto),
             "br-equities" => Some(AssetClass::BrEquities),
             "us-indices" => Some(AssetClass::UsIndices),
+            "brl-manual" => Some(AssetClass::BrlManual),
             _ => None,
         }
     }
@@ -55,6 +60,7 @@ impl AssetClass {
             AssetClass::Crypto => "crypto",
             AssetClass::BrEquities => "br-equities",
             AssetClass::UsIndices => "us-indices",
+            AssetClass::BrlManual => "brl-manual",
         }
     }
 }
@@ -303,6 +309,18 @@ pub struct BarcaActual {
     pub current_percent: f64,
 }
 
+/// A holding the price round has no price for (e.g. a name brapi doesn't
+/// know as a B3 ticker). It is left out of every total, and listed here so
+/// the UI can say so instead of the holding silently vanishing.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct UnpricedPosition {
+    pub symbol: String,
+    pub group: String,
+    pub barca: String,
+    pub asset_class: String,
+    pub current_quantity: f64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct AllocationReport {
     pub total_value: f64,
@@ -310,6 +328,8 @@ pub struct AllocationReport {
     pub per_group: Vec<GroupAllocation>,
     pub per_barca: Vec<BarcaAllocation>,
     pub per_barca_actual: Vec<BarcaActual>,
+    /// Holdings (quantity > 0) with no price, sorted like `per_asset`.
+    pub unpriced: Vec<UnpricedPosition>,
 }
 
 /// A portfolio's live allocations and the prices they were computed with.
@@ -544,6 +564,7 @@ mod tests {
             AssetClass::Crypto,
             AssetClass::BrEquities,
             AssetClass::UsIndices,
+            AssetClass::BrlManual,
         ] {
             assert_eq!(AssetClass::parse(class.as_str()), Some(class));
         }

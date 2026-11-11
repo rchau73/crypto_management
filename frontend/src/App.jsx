@@ -39,6 +39,7 @@ function Dashboard({ user, portfolio, onLogout }) {
     groupAllocations,
     barcaAllocations,
     barcaActualAllocations,
+    unpriced,
     loading,
     loaded,
     loadError,
@@ -73,11 +74,13 @@ function Dashboard({ user, portfolio, onLogout }) {
   const page = resolvePage(route.page, user, portfolio);
   const canImport = canEdit(user, portfolio);
   const report = useMemo(
-    () => ({ allocations, groupAllocations, barcaAllocations, barcaActualAllocations }),
-    [allocations, groupAllocations, barcaAllocations, barcaActualAllocations]
+    () => ({ allocations, groupAllocations, barcaAllocations, barcaActualAllocations, unpriced }),
+    [allocations, groupAllocations, barcaAllocations, barcaActualAllocations, unpriced]
   );
   const totalWalletValue = allocations.reduce((sum, row) => sum + (typeof row.value === "number" ? row.value : 0), 0);
-  const hasData = allocations.length > 0;
+  // An account holding only unpriced assets still gets its pages, where
+  // UnpricedAlert says why the numbers are missing.
+  const hasData = allocations.length > 0 || unpriced.length > 0;
 
   const go = (key, params = {}) => {
     route.navigate(key, params);
@@ -136,6 +139,7 @@ function Dashboard({ user, portfolio, onLogout }) {
               pricesAsOf={pricesAsOf}
               refreshIntervalSecs={refreshIntervalSecs}
               onOpenHoldings={() => go("holdings", { out: "1" })}
+              onOpenUnpriced={() => go("holdings")}
               accountName={portfolio.name}
               canRecord={canImport}
               onTradeRecorded={() => reload({ silent: true })}

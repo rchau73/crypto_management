@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Box, Button, TextField, Typography } from "@mui/material";
+import { Box, Button, InputAdornment, TextField, Typography } from "@mui/material";
 import { correctWalletQuantity } from "../api/client";
 import { useCurrentPortfolio } from "../hooks/useCurrentPortfolio";
-import { canCorrectQuantity, parseNonNegative } from "../utils/portfolioTargets";
+import { canCorrectQuantity, parseNonNegative, quantityUnit } from "../utils/portfolioTargets";
 
 // The Quantity cell of one Portfolio Targets row:
 // - new row: an editable starting quantity (saved with "Save All");
@@ -17,6 +17,7 @@ export function QuantityCell({ row, onChange, onCorrected }) {
   const [error, setError] = useState("");
 
   if (row.isNew) {
+    const unit = quantityUnit(row.asset_class);
     return (
       <TextField
         size="small"
@@ -24,8 +25,11 @@ export function QuantityCell({ row, onChange, onCorrected }) {
         value={row.current_quantity}
         onChange={(e) => onChange(e.target.value)}
         error={parseNonNegative(row.current_quantity) === null}
-        sx={{ width: 110 }}
-        slotProps={{ htmlInput: { step: "any", min: 0 } }}
+        sx={{ width: unit ? 140 : 110 }}
+        slotProps={{
+          htmlInput: { step: "any", min: 0, "aria-label": unit ? "Value in R$" : "Quantity" },
+          input: unit ? { startAdornment: <InputAdornment position="start">{unit}</InputAdornment> } : undefined,
+        }}
       />
     );
   }

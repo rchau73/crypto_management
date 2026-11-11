@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   FormControl,
+  ListItemText,
   MenuItem,
   Paper,
   Select,
@@ -25,6 +26,7 @@ import { STATUS_COLORS } from "../../theme";
 import { QuantityCell } from "../QuantityCell";
 import {
   ASSET_CLASSES,
+  ASSET_CLASS_HINTS,
   blankRow,
   filterRows,
   sortValue,
@@ -192,10 +194,15 @@ export function PortfolioTargetsTab() {
                 </TableCell>
                 <TableCell>
                   <FormControl size="small" sx={{ minWidth: 130 }} disabled={!r.isNew}>
-                    <Select value={r.asset_class} onChange={(e) => updateRow(r._id, "asset_class", e.target.value)}>
+                    <Select
+                      value={r.asset_class}
+                      onChange={(e) => updateRow(r._id, "asset_class", e.target.value)}
+                      renderValue={(c) => c}
+                      inputProps={{ "aria-label": "Asset class" }}
+                    >
                       {ASSET_CLASSES.map((c) => (
                         <MenuItem key={c} value={c}>
-                          {c}
+                          <ListItemText primary={c} secondary={ASSET_CLASS_HINTS[c]} />
                         </MenuItem>
                       ))}
                     </Select>

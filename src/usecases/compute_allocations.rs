@@ -3,7 +3,7 @@
 
 use crate::domain::models::{
     AllocationReport, AssetAllocation, BarcaActual, BarcaAllocation, GroupAllocation, MarketQuote,
-    WalletPosition,
+    UnpricedPosition, WalletPosition,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -28,9 +28,11 @@ fn percent_of(part: f64, total: f64) -> f64 {
 /// Builds the allocation report. Every list is sorted by name, so the
 /// output is stable between calls.
 ///
-/// A position whose symbol has no price is left out entirely (it is not
-/// valued at 0), because showing a $0 holding would misrepresent the
-/// portfolio. Its target still counts towards its group's target.
+/// A position whose symbol has no price is left out of every value and
+/// percentage (it is not valued at 0), because showing a $0 holding would
+/// misrepresent the portfolio. Its target still counts towards its group's
+/// target, and if it holds anything it is listed in `unpriced`, so the UI
+/// can say it is missing rather than let it vanish.
 pub fn compute_allocations(
     positions: &[WalletPosition],
     quotes: &[MarketQuote],
@@ -44,8 +46,19 @@ pub fn compute_allocations(
     // 1. Value each priced position. Positions that differ only by asset
     //    class are merged into one row.
     let mut assets: BTreeMap<(String, String, String), AssetTotals> = BTreeMap::new();
+    let mut unpriced = Vec::new();
     for position in positions {
         let Some(&price) = prices.get(position.symbol.as_str()) else {
+            // A zeroed-out position holds nothing, so nothing is missing.
+            if position.current_quantity > 0.0 {
+                unpriced.push(UnpricedPosition {
+                    symbol: position.symbol.clone(),
+                    group: position.group_name.clone().unwrap_or_default(),
+                    barca: position.barca.clone().unwrap_or_default(),
+                    asset_class: position.asset_class.clone(),
+                    current_quantity: position.current_quantity,
+                });
+            }
             continue;
         };
         let key = (
@@ -60,6 +73,7 @@ pub fn compute_allocations(
         totals.target_percent += position.target_percent;
     }
     let total_value: f64 = assets.values().map(|a| a.value).sum();
+    unpriced.sort_by(|a, b| (&a.symbol, &a.group, &a.barca).cmp(&(&b.symbol, &b.group, &b.barca)));
 
     let per_asset = assets
         .iter()
@@ -146,6 +160,7 @@ pub fn compute_allocations(
         per_group,
         per_barca,
         per_barca_actual,
+        unpriced,
     }
 }
 
@@ -228,6 +243,50 @@ mod tests {
         );
         assert!(report.per_asset.is_empty());
         assert_eq!(report.total_value, 0.0);
+    }
+
+    #[test]
+    fn an_unpriced_holding_is_listed_so_it_does_not_vanish() {
+        let mut fund = position("FUND A", "Holding", "RendaFixa", 0.0, 1500.0);
+        fund.asset_class = "br-equities".to_string();
+        let report = compute_allocations(
+            &[position("BTC", "Core", "Base", 100.0, 1.0), fund],
+            &[quote("BTC", 10.0)],
+            &HashMap::new(),
+        );
+
+        assert_eq!(report.total_value, 10.0, "left out of the total");
+        assert_eq!(report.per_asset.len(), 1);
+        assert_eq!(
+            report.unpriced,
+            vec![UnpricedPosition {
+                symbol: "FUND A".to_string(),
+                group: "Holding".to_string(),
+                barca: "RendaFixa".to_string(),
+                asset_class: "br-equities".to_string(),
+                current_quantity: 1500.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unpriced_position_holding_nothing_is_not_listed() {
+        let report = compute_allocations(
+            &[position("OLD", "Core", "A", 0.0, 0.0)],
+            &[],
+            &HashMap::new(),
+        );
+        assert!(report.unpriced.is_empty());
+    }
+
+    #[test]
+    fn a_priced_holding_is_not_listed_as_unpriced() {
+        let report = compute_allocations(
+            &[position("BTC", "Core", "A", 100.0, 1.0)],
+            &[quote("BTC", 10.0)],
+            &HashMap::new(),
+        );
+        assert!(report.unpriced.is_empty());
     }
 
     #[test]
