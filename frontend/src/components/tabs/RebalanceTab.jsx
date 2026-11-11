@@ -5,6 +5,7 @@ import { BarcaBands } from "../BarcaBands";
 import { RoundSteps } from "../RoundSteps";
 import { RecordTradeDialog } from "../RecordTradeDialog";
 import { MoveBalanceDialog } from "../MoveBalanceDialog";
+import { UnpricedAlert } from "../UnpricedAlert";
 import { planRound } from "../../utils/rebalance";
 import { describePricesAge } from "../../utils/pricesAge";
 
@@ -24,6 +25,7 @@ export function RebalanceTab({
   pricesAsOf,
   refreshIntervalSecs,
   onOpenHoldings,
+  onOpenUnpriced,
   accountName,
   canRecord,
   onTradeRecorded,
@@ -66,6 +68,8 @@ export function RebalanceTab({
           {pricesLabel}: the steps below use those prices. Check them before placing any order.
         </Alert>
       )}
+
+      <UnpricedAlert unpriced={report.unpriced} compact onOpenHoldings={onOpenUnpriced} />
 
       {notice && (
         <Alert severity="success" sx={{ mb: 2 }} onClose={() => setNotice("")}>

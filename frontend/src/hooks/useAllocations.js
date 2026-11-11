@@ -17,6 +17,8 @@ export function useAllocations() {
   const [groupAllocations, setGroupAllocations] = useState([]);
   const [barcaAllocations, setBarcaAllocations] = useState([]);
   const [barcaActualAllocations, setBarcaActualAllocations] = useState([]);
+  // Holdings with no price this round, left out of every total.
+  const [unpriced, setUnpriced] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [importing, setImporting] = useState(false);
@@ -53,6 +55,7 @@ export function useAllocations() {
           setGroupAllocations(data.per_group || []);
           setBarcaAllocations(data.per_barca || []);
           setBarcaActualAllocations(data.per_barca_actual || []);
+          setUnpriced(data.unpriced || []);
           setUsdBrl(data.usd_brl ?? null);
           setPricesAsOf(data.prices_as_of ?? null);
           setRefreshIntervalSecs(data.refresh_interval_secs ?? 0);
@@ -123,6 +126,7 @@ export function useAllocations() {
     groupAllocations,
     barcaAllocations,
     barcaActualAllocations,
+    unpriced,
     loading,
     loadError,
     importing,

@@ -25,11 +25,11 @@ const report = {
 };
 
 // Holds the URL params like App does, so clicks round-trip.
-function Harness({ initial = {}, onChange = () => {} }) {
+function Harness({ initial = {}, onChange = () => {}, unpriced }) {
   const [params, setParams] = useState(initial);
   return (
     <HoldingsTab
-      report={report}
+      report={unpriced ? { ...report, unpriced } : report}
       params={params}
       onParamsChange={(p, o) => {
         onChange(p, o);
@@ -46,7 +46,27 @@ const firstColumn = () =>
     .getAllByRole("rowheader")
     .map((c) => c.textContent);
 
+const fund = { symbol: "FUND A", group: "Holding", barca: "RendaFixa", asset_class: "br-equities", current_quantity: 1000 };
+
 describe("HoldingsTab", () => {
+  it("lists holdings with no price, and how to fix them, above the table", () => {
+    render(<Harness unpriced={[fund]} />);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("1 holding has no price and is left out of every total");
+    expect(alert).toHaveTextContent("FUND A · RendaFixa · br-equities · qty 1,000");
+    expect(alert).toHaveTextContent(/brl-manual/);
+  });
+
+  it("shows no warning when everything is priced", () => {
+    render(<Harness unpriced={[]} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("says a filtered-for holding is held but unpriced instead of just 'no rows'", () => {
+    render(<Harness unpriced={[fund]} initial={{ q: "fund a" }} />);
+    expect(screen.getByText(/FUND A is held but has no price \(see the warning above\)/)).toBeInTheDocument();
+  });
+
   it("opens on the Asset view, biggest $ gap first, with the step's direction", () => {
     render(<Harness />);
     expect(viewButton("Asset")).toHaveAttribute("aria-pressed", "true");

@@ -1,7 +1,20 @@
 // Pure helpers for the Portfolio Targets editor — no React, easy to test.
 import { getTotalTargetPercent } from "./allocationMath";
 
-export const ASSET_CLASSES = ["crypto", "br-equities", "us-indices"];
+export const ASSET_CLASSES = ["crypto", "br-equities", "us-indices", "brl-manual"];
+
+// One line under each option of the asset-class dropdown.
+export const ASSET_CLASS_HINTS = {
+  crypto: "Priced by CoinMarketCap",
+  "br-equities": "B3 ticker, priced by brapi",
+  "us-indices": "US ticker, priced by Finnhub",
+  "brl-manual": "No ticker (fund, Tesouro, cash) · quantity = value in R$",
+};
+
+// A brl-manual holding's quantity is its value in reais.
+export function quantityUnit(assetClass) {
+  return assetClass === "brl-manual" ? "R$" : "";
+}
 
 // Floats that should add up to 100 (e.g. 33.34 + 33.33 + 33.33) — same
 // tolerance the backend uses.

@@ -25,12 +25,12 @@ const report = {
   })),
 };
 
-function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn(), canRecord = false }) {
+function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn(), onOpenUnpriced = vi.fn(), canRecord = false, unpriced }) {
   const [sentiment, setSentiment] = useState(null);
   const [done, setDone] = useState(() => new Set());
   return (
     <RebalanceTab
-      report={report}
+      report={unpriced ? { ...report, unpriced } : report}
       sentiment={sentiment}
       onSentimentChange={setSentiment}
       done={done}
@@ -38,6 +38,7 @@ function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn
       pricesAsOf={pricesAsOf}
       refreshIntervalSecs={300}
       onOpenHoldings={onOpenHoldings}
+      onOpenUnpriced={onOpenUnpriced}
       accountName="Account A"
       canRecord={canRecord}
       onTradeRecorded={vi.fn()}
@@ -48,6 +49,17 @@ function Harness({ pricesAsOf = new Date().toISOString(), onOpenHoldings = vi.fn
 const steps = () => within(screen.getByRole("region", { name: "This round's steps" }));
 
 describe("RebalanceTab", () => {
+  it("warns in one line that unpriced holdings aren't in the bands, linking to Holdings", async () => {
+    const user = userEvent.setup();
+    const onOpenUnpriced = vi.fn();
+    const cash = { symbol: "CASH BRL", group: "Holding", barca: "Caixa", asset_class: "br-equities", current_quantity: 500 };
+    render(<Harness unpriced={[cash, { ...cash, symbol: "CDB" }]} onOpenUnpriced={onOpenUnpriced} />);
+
+    expect(screen.getByText(/2 holdings have no price and are left out of every total: the bands below don't count them/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "See which in Holdings" }));
+    expect(onOpenUnpriced).toHaveBeenCalled();
+  });
+
   it("shows the bands right away but asks for the sentiment before any step", () => {
     render(<Harness />);
     expect(screen.getByText("3 of 4 BARCA outside their band")).toBeInTheDocument();

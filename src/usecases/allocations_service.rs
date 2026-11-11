@@ -215,6 +215,7 @@ impl AllocationsService {
             priced_at: Utc::now(),
             fetched: Instant::now(),
         });
+        log_unpriced(&holdings, &book);
 
         let mut recorded = 0;
         for (id, positions) in &holdings {
@@ -314,13 +315,14 @@ impl AllocationsService {
             }
         };
 
-        let br_quotes = self
+        let mut br_quotes = self
             .fetch_equity_quotes(
                 positions,
                 AssetClass::BrEquities,
                 &self.providers.br_equities,
             )
             .await;
+        br_quotes.extend(manual_brl_quotes(positions));
         if !br_quotes.is_empty() {
             match &usd_brl {
                 Some(fx) => {
@@ -420,6 +422,40 @@ fn convert_brl_to_usd(brl_quotes: Vec<MarketQuote>, fx: &FxRate) -> PricedQuotes
         quotes,
         asset_notes,
         usd_brl: Some(fx.clone()),
+    }
+}
+
+/// A `brl-manual` holding's quantity is its value in reais, so it is quoted
+/// at R$1 — then converted with PTAX like any other Brazilian quote.
+fn manual_brl_quotes(positions: &[WalletPosition]) -> Vec<MarketQuote> {
+    symbols_of_class(positions, AssetClass::BrlManual)
+        .into_iter()
+        .map(|symbol| MarketQuote { symbol, price: 1.0 })
+        .collect()
+}
+
+/// One warning per portfolio holding something this round couldn't price
+/// (it is left out of that portfolio's totals until it gets a price).
+fn log_unpriced(holdings: &[(PortfolioId, Vec<WalletPosition>)], book: &PriceBook) {
+    let priced: BTreeSet<&str> = book
+        .quotes
+        .quotes
+        .iter()
+        .map(|q| q.symbol.as_str())
+        .collect();
+    for (id, positions) in holdings {
+        let missing: Vec<String> = positions
+            .iter()
+            .filter(|p| p.current_quantity > 0.0 && !priced.contains(p.symbol.as_str()))
+            .map(|p| format!("{} ({})", p.symbol, p.asset_class))
+            .collect();
+        if !missing.is_empty() {
+            tracing::warn!(
+                portfolio_id = %id,
+                ?missing,
+                "No price for these holdings — left out of the totals"
+            );
+        }
     }
 }
 
@@ -610,6 +646,87 @@ mod tests {
         assert_eq!(symbols, ["BTC"]);
         assert_eq!(report.total_value, 10.0);
         assert_eq!(repo.fetch_total_history(PORTFOLIO).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_brl_manual_holding_is_its_quantity_in_reais_without_any_api() {
+        let repo = test_repo().await;
+        seed(&repo, "BTC", "crypto", 1.0, 50.0).await;
+        seed(&repo, "FUND A", "brl-manual", 5_500.0, 50.0).await;
+
+        // brapi failing proves the manual value doesn't depend on it.
+        let report = service(
+            repo,
+            providers_with_fx(
+                FakeProvider::with_prices(&[("BTC", 1_000.0)]),
+                FakeProvider::failing(),
+                FakeFx(Some(5.5)),
+            ),
+        )
+        .current_report(PORTFOLIO)
+        .await
+        .unwrap()
+        .report;
+
+        // R$5,500 / 5.5 = $1,000.
+        let fund = report
+            .per_asset
+            .iter()
+            .find(|a| a.symbol == "FUND A")
+            .expect("valued, not dropped");
+        assert!((fund.value - 1_000.0).abs() < 1e-9);
+        assert!((report.total_value - 2_000.0).abs() < 1e-9);
+        assert!(report.unpriced.is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_ptax_a_brl_manual_holding_is_listed_as_unpriced() {
+        let repo = test_repo().await;
+        seed(&repo, "BTC", "crypto", 1.0, 50.0).await;
+        seed(&repo, "CASH BRL", "brl-manual", 500.0, 50.0).await;
+
+        let report = service(
+            repo,
+            providers_with_fx(
+                FakeProvider::with_prices(&[("BTC", 10.0)]),
+                FakeProvider::empty(),
+                FakeFx(None),
+            ),
+        )
+        .current_report(PORTFOLIO)
+        .await
+        .unwrap()
+        .report;
+
+        assert_eq!(
+            report.total_value, 10.0,
+            "never valued as if reais were dollars"
+        );
+        let unpriced: Vec<_> = report.unpriced.iter().map(|u| u.symbol.as_str()).collect();
+        assert_eq!(unpriced, ["CASH BRL"]);
+    }
+
+    #[tokio::test]
+    async fn a_name_brapi_does_not_know_is_reported_as_unpriced() {
+        let repo = test_repo().await;
+        seed(&repo, "BTC", "crypto", 1.0, 50.0).await;
+        seed(&repo, "BOND B", "br-equities", 40.0, 50.0).await;
+
+        let report = service(
+            repo,
+            providers(
+                FakeProvider::with_prices(&[("BTC", 10.0)]),
+                FakeProvider::empty(),
+            ),
+        )
+        .current_report(PORTFOLIO)
+        .await
+        .unwrap()
+        .report;
+
+        assert_eq!(report.unpriced.len(), 1);
+        assert_eq!(report.unpriced[0].symbol, "BOND B");
+        assert_eq!(report.unpriced[0].asset_class, "br-equities");
     }
 
     #[tokio::test]

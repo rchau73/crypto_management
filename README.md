@@ -180,7 +180,8 @@ Required env vars (see `.env.example`): `JWT_SECRET` (generate with `openssl ran
    HGRU11,FII,Renda Variavel,5,10,br-equities
    ```
 
-   `asset_class` is optional and defaults to `crypto` if the column is omitted; it's one of `crypto` / `br-equities` / `us-indices` and controls which price provider is used for that symbol.
+   `asset_class` is optional and defaults to `crypto` if the column is omitted; it's one of `crypto` / `br-equities` / `us-indices` / `brl-manual` and controls which price provider is used for that symbol. Use `brl-manual` for anything without a market ticker (a fixed-income fund, a Tesouro bond, cash in reais): its quantity is its value in R$, priced at R$1 and converted with the PTAX rate, with no API call.
+   A holding the price round can't price (e.g. a fund name under `br-equities`, which brapi doesn't know) is left out of every total, and Holdings and Rebalance show a warning listing it.
 
 4. **Build and run the backend server:**
 
