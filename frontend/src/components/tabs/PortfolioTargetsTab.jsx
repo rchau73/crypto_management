@@ -4,10 +4,12 @@ import {
   Box,
   Button,
   FormControl,
+  FormControlLabel,
   ListItemText,
   MenuItem,
   Paper,
   Select,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -24,13 +26,15 @@ import { fetchBarcaTargets } from "../../api/client";
 import { zebraRowSx } from "../../styles/tableStyles";
 import { STATUS_COLORS } from "../../theme";
 import { QuantityCell } from "../QuantityCell";
+import { TargetRowActions } from "../TargetRowActions";
 import {
   ASSET_CLASSES,
   ASSET_CLASS_HINTS,
   blankRow,
   filterRows,
+  isKept,
   sortValue,
-  toSavePayload,
+  toSaveRequest,
   uniqueSorted,
   validateRows,
 } from "../../utils/portfolioTargets";
@@ -67,8 +71,10 @@ function useBarcaNameSuggestions() {
 //
 // For an existing row, only the target is editable. Its symbol/group/BARCA/
 // asset class identify its holdings in the ledger — renaming would move the
-// target away from the holdings — so to "rename", remove the row and add a
-// new one. Quantity rules live in QuantityCell.
+// target away from the holdings — so to "rename", add a new row, set the old
+// one's quantity to 0 and remove it. Quantity rules live in QuantityCell,
+// remove/restore rules in TargetRowActions; removed rows are hidden unless
+// "Show removed" is on.
 //
 // Every column can be sorted (click its header) and filtered (the box under
 // it). Rows are edited by a stable `_id`, never by their position on screen,
@@ -82,6 +88,7 @@ export function PortfolioTargetsTab() {
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [filters, setFilters] = useState(NO_FILTERS);
+  const [showRemoved, setShowRemoved] = useState(false);
   const barcaNames = useBarcaNameSuggestions();
   const nextId = useRef(0);
   const withId = (row) => ({ ...row, _id: nextId.current++ });
@@ -91,7 +98,11 @@ export function PortfolioTargetsTab() {
     setSaveSuccess(false);
   }, [savedRows]);
 
-  const savedVisible = useMemo(() => filterRows(rows.filter((r) => !r.isNew), filters), [rows, filters]);
+  const savedVisible = useMemo(
+    () => filterRows(rows.filter((r) => !r.isNew && (showRemoved || !r.removed)), filters),
+    [rows, filters, showRemoved]
+  );
+  const removedCount = rows.filter((r) => r.removed).length;
   const { sortConfig, toggleSort, sortedRows } = useSortableData(savedVisible, { getValue: sortValue });
   const visibleRows = [...sortedRows, ...rows.filter((r) => r.isNew)];
   const isFiltered = Object.values(filters).some((text) => text.trim() !== "");
@@ -105,17 +116,29 @@ export function PortfolioTargetsTab() {
     setSaveSuccess(false);
   };
   const addRow = () => setRows((prev) => [...prev, withId(blankRow())]);
-  const removeRow = (id) => {
+  const dropRow = (id) => {
     setRows((prev) => prev.filter((r) => r._id !== id));
     setSaveSuccess(false);
   };
+  // After Corrigir: a position holding something again can't be (or stay)
+  // removed — the server already brought it back.
+  const correctedRow = (id, quantity) =>
+    setRows((prev) =>
+      prev.map((r) =>
+        r._id !== id
+          ? r
+          : quantity > 0
+            ? { ...r, current_quantity: quantity, removed: false, markedForRemoval: false, markedForRestore: false }
+            : { ...r, current_quantity: quantity }
+      )
+    );
   const setFilter = (key, text) => setFilters((prev) => ({ ...prev, [key]: text }));
 
   const handleSave = async () => {
     setSaving(true);
     setSaveError("");
     try {
-      await save(toSavePayload(rows));
+      await save(toSaveRequest(rows));
       setSaveSuccess(true);
     } catch (err) {
       setSaveError(err.message);
@@ -133,14 +156,23 @@ export function PortfolioTargetsTab() {
         Every row's target % — across the whole portfolio, every asset class together — must sum to 100%.
         Quantities come from CSV import and are read-only; a new asset (added below) can have a starting
         quantity. A single-source row can have its quantity fixed with "Corrigir" (applied immediately); a
-        row that sums several sources shows "multi-fonte". Remove takes the row's target out of the portfolio
-        on Save (its ledger history is kept).
+        row that sums several sources shows "multi-fonte". A row holding nothing can be removed on Save: it
+        disappears from every page (its ledger history is kept) and comes back by itself if it gets a quantity
+        again.
       </Typography>
 
       {error && (
         <Typography variant="body2" sx={{ color: "error.main", mb: 2 }}>
           {error}
         </Typography>
+      )}
+
+      {removedCount > 0 && (
+        <FormControlLabel
+          sx={{ mb: 1 }}
+          control={<Switch size="small" checked={showRemoved} onChange={(e) => setShowRemoved(e.target.checked)} />}
+          label={`Show removed (${removedCount})`}
+        />
       )}
 
       <TableContainer component={Paper} sx={{ maxWidth: "100%", overflowX: "auto", mb: 2 }}>
@@ -159,11 +191,12 @@ export function PortfolioTargetsTab() {
           />
           <TableBody>
             {visibleRows.map((r) => (
-              <TableRow key={r._id} hover sx={zebraRowSx}>
+              <TableRow key={r._id} hover sx={{ ...zebraRowSx, opacity: isKept(r) ? 1 : 0.55 }}>
                 <TableCell>
                   <TextField
                     size="small"
                     value={r.symbol}
+                    slotProps={{ htmlInput: { style: { textDecoration: isKept(r) ? "none" : "line-through" } } }}
                     onChange={(e) => updateRow(r._id, "symbol", e.target.value)}
                     disabled={!r.isNew}
                     error={r.symbol.trim() === ""}
@@ -214,6 +247,7 @@ export function PortfolioTargetsTab() {
                     type="number"
                     value={r.target_percent}
                     onChange={(e) => updateRow(r._id, "target_percent", e.target.value)}
+                    disabled={!isKept(r)}
                     sx={{ width: 90 }}
                     slotProps={{ htmlInput: { step: 0.1, min: 0, max: 100 } }}
                   />
@@ -224,7 +258,7 @@ export function PortfolioTargetsTab() {
                     onChange={(value) => updateRow(r._id, "current_quantity", value)}
                     // Update only this row: re-fetching everything would wipe
                     // unsaved Target % edits on other rows.
-                    onCorrected={(quantity) => updateRow(r._id, "current_quantity", quantity)}
+                    onCorrected={(quantity) => correctedRow(r._id, quantity)}
                   />
                 </TableCell>
                 <TableCell>
@@ -237,9 +271,7 @@ export function PortfolioTargetsTab() {
                   />
                 </TableCell>
                 <TableCell align="right">
-                  <Button size="small" color="error" onClick={() => removeRow(r._id)}>
-                    Remove
-                  </Button>
+                  <TargetRowActions row={r} onDrop={() => dropRow(r._id)} onMark={(field, value) => updateRow(r._id, field, value)} />
                 </TableCell>
               </TableRow>
             ))}
@@ -253,7 +285,7 @@ export function PortfolioTargetsTab() {
             {rows.length > 0 && visibleRows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={COLUMNS.length} align="center" sx={{ color: "text.secondary" }}>
-                  No rows match the filters.
+                  {isFiltered ? "No rows match the filters." : "Every position is removed. Turn on “Show removed” to see them."}
                 </TableCell>
               </TableRow>
             )}
@@ -271,7 +303,7 @@ export function PortfolioTargetsTab() {
         {isFiltered && (
           <Typography variant="body2" sx={{ color: "text.secondary" }}>
             Showing {sortedRows.length} of {rows.filter((r) => !r.isNew).length} rows · filtered sum{" "}
-            {getTotalTargetPercent(sortedRows).toFixed(2)}% (Sum and Save All cover every row)
+            {getTotalTargetPercent(sortedRows.filter(isKept)).toFixed(2)}% (Sum and Save All cover every row)
           </Typography>
         )}
         <Button variant="contained" disabled={!isValid || saving} onClick={handleSave}>

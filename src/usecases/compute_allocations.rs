@@ -186,6 +186,7 @@ mod tests {
             last_price: None,
             notes: None,
             source_count: 1,
+            removed: false,
         }
     }
 

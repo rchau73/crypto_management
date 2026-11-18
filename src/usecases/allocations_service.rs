@@ -891,6 +891,7 @@ mod tests {
             last_price: None,
             notes: None,
             source_count: 1,
+            removed: false,
         };
         let positions = vec![
             position("XPML11", "br-equities"),

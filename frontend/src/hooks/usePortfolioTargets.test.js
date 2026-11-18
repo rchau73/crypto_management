@@ -37,12 +37,14 @@ describe("usePortfolioTargets", () => {
     const { result } = renderHook(() => usePortfolioTargets());
     await waitFor(() => expect(api.fetchPortfolioTargets).toHaveBeenCalledTimes(1));
 
+    expect(api.fetchPortfolioTargets).toHaveBeenCalledWith(7, { includeRemoved: true });
     const rows = [{ symbol: "BTC", target_percent: 100 }];
+    const request = { rows, remove: [] };
     await act(async () => {
-      await result.current.save(rows);
+      await result.current.save(request);
     });
 
-    expect(api.savePortfolioTargets).toHaveBeenCalledWith(7, rows);
+    expect(api.savePortfolioTargets).toHaveBeenCalledWith(7, request);
     expect(api.fetchPortfolioTargets).toHaveBeenCalledTimes(2);
     expect(result.current.rows).toEqual(rows);
   });

@@ -10,7 +10,7 @@ use crate::domain::models::{
     BarcaTarget, NewBarcaTarget, PositionSource, PricedReport, RecordedActivity, WalletPosition,
 };
 use crate::usecases::history_service::HistoryLevel;
-use crate::usecases::targets_service::{QuantityCorrection, TargetRow};
+use crate::usecases::targets_service::{PositionRef, QuantityCorrection, TargetRow};
 use crate::usecases::trade_service::{
     TradeOutcome, TradeRequest, TransferOutcome, TransferRequest,
 };
@@ -58,19 +58,35 @@ pub async fn history(
     Ok(Json(history))
 }
 
+#[derive(Deserialize)]
+pub struct TargetsQuery {
+    /// `?include_removed=true` also lists the removed positions.
+    #[serde(default)]
+    include_removed: bool,
+}
+
 pub async fn get_portfolio_targets(
     scope: PortfolioScope,
     State(state): State<AppState>,
+    Query(query): Query<TargetsQuery>,
 ) -> ApiResult<Json<Vec<WalletPosition>>> {
-    Ok(Json(state.targets.list_positions(scope.portfolio).await?))
+    Ok(Json(
+        state
+            .targets
+            .list_positions(scope.portfolio, query.include_removed)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
 pub struct SavePortfolioTargetsPayload {
     rows: Vec<TargetRow>,
+    /// Positions to remove (each must hold nothing).
+    #[serde(default)]
+    remove: Vec<PositionRef>,
 }
 
-#[tracing::instrument(skip_all, fields(user_id = scope.user.user_id, portfolio_id = %scope.portfolio, rows = payload.rows.len()))]
+#[tracing::instrument(skip_all, fields(user_id = scope.user.user_id, portfolio_id = %scope.portfolio, rows = payload.rows.len(), remove = payload.remove.len()))]
 pub async fn save_portfolio_targets(
     scope: PortfolioScope,
     State(state): State<AppState>,
@@ -80,7 +96,12 @@ pub async fn save_portfolio_targets(
     let row_count = payload.rows.len();
     state
         .targets
-        .save_portfolio_targets(scope.portfolio, payload.rows, Some(scope.user.user_id))
+        .save_portfolio_targets(
+            scope.portfolio,
+            payload.rows,
+            payload.remove,
+            Some(scope.user.user_id),
+        )
         .await?;
     info!("Saved portfolio targets");
     Ok(Json(json!({ "ok": true, "rows": row_count })))

@@ -16,6 +16,23 @@ export function quantityUnit(assetClass) {
   return assetClass === "brl-manual" ? "R$" : "";
 }
 
+// Removing a position is a soft delete: it is hidden while it holds
+// nothing, and shows up again by itself if it gets a quantity. On screen a
+// saved row can be marked to flip on "Save All": `markedForRemoval` on an
+// active row, `markedForRestore` on a removed one (`removed` comes from the
+// server).
+
+// True when the row is part of the portfolio once saved.
+export function isKept(row) {
+  return row.removed ? Boolean(row.markedForRestore) : !row.markedForRemoval;
+}
+
+// Only a position holding nothing can be removed (a new, unsaved row can
+// always be dropped).
+export function canRemove(row) {
+  return row.isNew || Number(row.current_quantity) === 0;
+}
+
 // Floats that should add up to 100 (e.g. 33.34 + 33.33 + 33.33) — same
 // tolerance the backend uses.
 export const SUM_TOLERANCE = 0.01;
@@ -53,7 +70,8 @@ export function canCorrectQuantity(row) {
   return !row.isNew && row.source_count === 1;
 }
 
-export function validateRows(rows) {
+export function validateRows(allRows) {
+  const rows = allRows.filter(isKept);
   const sum = getTotalTargetPercent(rows);
   const everyRowValid = rows.every(
     (r) =>
@@ -65,9 +83,22 @@ export function validateRows(rows) {
   return { sum, isValid };
 }
 
-// What "Save All" sends. An existing row never sends quantity/notes: the
-// table shows a SUM over several sources, and writing that sum back would
-// double the holding. Only a brand-new row carries a starting quantity.
+// What "Save All" sends: the kept rows (`toSavePayload`) and the rows
+// marked for removal. A removed row left alone is in neither, so it stays
+// removed.
+export function toSaveRequest(rows) {
+  return {
+    rows: toSavePayload(rows.filter(isKept)),
+    remove: rows
+      .filter((r) => !r.isNew && !r.removed && r.markedForRemoval)
+      .map((r) => ({ symbol: r.symbol, group_name: r.group_name || null, barca: r.barca || null, asset_class: r.asset_class })),
+  };
+}
+
+// The rows part of "Save All". An existing row never sends quantity/notes:
+// the table shows a SUM over several sources, and writing that sum back
+// would double the holding. Only a brand-new row carries a starting
+// quantity.
 export function toSavePayload(rows) {
   return rows.map((r) => {
     const row = {

@@ -13,7 +13,7 @@ use crate::usecases::validation::{
     check_asset_class, check_not_blank, check_percent, check_quantity, check_sums_to_100,
 };
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -88,6 +88,26 @@ impl TargetRow {
     }
 }
 
+/// Names one existing position, e.g. one to remove.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PositionRef {
+    pub symbol: String,
+    pub group_name: Option<String>,
+    pub barca: Option<String>,
+    pub asset_class: String,
+}
+
+impl PositionRef {
+    fn key(&self) -> PositionKey {
+        PositionKey {
+            symbol: self.symbol.clone(),
+            group_name: self.group_name.clone().unwrap_or_default(),
+            barca: self.barca.clone().unwrap_or_default(),
+            asset_class: self.asset_class.clone(),
+        }
+    }
+}
+
 /// A request to fix the quantity of one position.
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuantityCorrection {
@@ -122,24 +142,39 @@ impl TargetsService {
         }
     }
 
+    /// The Portfolio Targets list; with `include_removed`, the removed
+    /// positions too (flagged `removed`).
     pub async fn list_positions(
         &self,
         portfolio: PortfolioId,
+        include_removed: bool,
     ) -> Result<Vec<WalletPosition>, TargetsError> {
-        Ok(self.portfolio.fetch_positions(portfolio).await?)
+        let positions = if include_removed {
+            self.portfolio
+                .fetch_positions_including_removed(portfolio)
+                .await?
+        } else {
+            self.portfolio.fetch_positions(portfolio).await?
+        };
+        Ok(positions)
     }
 
-    /// Replaces every portfolio target with `rows` (they must sum to 100%).
+    /// Replaces every portfolio target with `rows` (they must sum to 100%)
+    /// and removes the `remove` positions, in one transaction.
     ///
     /// A row for a position that doesn't exist yet also creates it, with
     /// the row's starting quantity/notes. For an existing position the
     /// submitted quantity/notes are ignored: the table shows a *sum* over
     /// sources, and writing that sum back as a new source would double the
-    /// holding.
+    /// holding. A row for a removed position restores it.
+    ///
+    /// Only a position holding nothing can be removed (a soft delete: the
+    /// ledger keeps it, and it shows up again if it gets a quantity).
     pub async fn save_portfolio_targets(
         &self,
         portfolio: PortfolioId,
         rows: Vec<TargetRow>,
+        remove: Vec<PositionRef>,
         updated_by: Option<i64>,
     ) -> Result<(), TargetsError> {
         let mut seen = HashSet::new();
@@ -154,13 +189,17 @@ impl TargetsService {
         }
         check_sums_to_100(rows.iter().map(|r| r.target_percent))?;
 
-        let existing: HashSet<PositionKey> = self
+        // Removed positions count as existing, so restoring one never
+        // appends a ledger row for it.
+        let positions: HashMap<PositionKey, WalletPosition> = self
             .portfolio
-            .fetch_positions(portfolio)
+            .fetch_positions_including_removed(portfolio)
             .await?
-            .iter()
-            .map(|p| p.key())
+            .into_iter()
+            .map(|p| (p.key(), p))
             .collect();
+        let existing: HashSet<PositionKey> = positions.keys().cloned().collect();
+        let removed = removable_keys(&remove, &seen, &positions)?;
 
         let targets: Vec<NewPortfolioTarget> = rows
             .iter()
@@ -184,8 +223,15 @@ impl TargetsService {
             .collect();
 
         self.portfolio
-            .replace_targets(portfolio, &targets, &new_entries, updated_by)
+            .replace_targets(portfolio, &targets, &new_entries, &removed, updated_by)
             .await?;
+        if !removed.is_empty() {
+            tracing::info!(
+                portfolio_id = %portfolio,
+                removed = ?removed.iter().map(|k| &k.symbol).collect::<Vec<_>>(),
+                "Removed empty positions"
+            );
+        }
         Ok(())
     }
 
@@ -202,9 +248,11 @@ impl TargetsService {
         check_quantity(correction.current_quantity)?;
 
         let key = correction.key();
+        // A removed position can be corrected too (a quantity above 0
+        // brings it back).
         let position = self
             .portfolio
-            .fetch_positions(portfolio)
+            .fetch_positions_including_removed(portfolio)
             .await?
             .into_iter()
             .find(|p| p.key() == key)
@@ -275,6 +323,41 @@ impl TargetsService {
     }
 }
 
+/// The keys of `remove`, once each is checked: it exists, holds nothing,
+/// and isn't also kept in the saved rows (`kept`).
+fn removable_keys(
+    remove: &[PositionRef],
+    kept: &HashSet<PositionKey>,
+    positions: &HashMap<PositionKey, WalletPosition>,
+) -> Result<Vec<PositionKey>, TargetsError> {
+    let mut keys = Vec::new();
+    for position_ref in remove {
+        let key = position_ref.key();
+        let Some(position) = positions.get(&key) else {
+            return Err(TargetsError::NotFound(format!(
+                "no position for {}",
+                position_ref.symbol
+            )));
+        };
+        if kept.contains(&key) {
+            return Err(TargetsError::Invalid(format!(
+                "{} is both kept and removed",
+                position_ref.symbol
+            )));
+        }
+        if position.current_quantity > 0.0 {
+            return Err(TargetsError::Invalid(format!(
+                "{} still holds {}; set its quantity to 0 with Corrigir before removing it",
+                position_ref.symbol, position.current_quantity
+            )));
+        }
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,7 +401,7 @@ mod tests {
         rows: Vec<TargetRow>,
     ) -> String {
         let err = service
-            .save_portfolio_targets(PORTFOLIO, rows, None)
+            .save_portfolio_targets(PORTFOLIO, rows, vec![], None)
             .await
             .unwrap_err();
         assert!(matches!(err, TargetsError::Invalid(_)), "{err:?}");
@@ -387,6 +470,7 @@ mod tests {
             .save_portfolio_targets(
                 PORTFOLIO,
                 vec![row("BTC", 33.34), row("ETH", 33.33), row("SOL", 33.33)],
+                vec![],
                 None,
             )
             .await
@@ -397,7 +481,7 @@ mod tests {
     async fn a_new_symbol_gets_a_seed_ledger_row_with_its_starting_quantity() {
         let (repo, service) = setup().await;
         service
-            .save_portfolio_targets(PORTFOLIO, vec![row("HGRU11", 100.0)], None)
+            .save_portfolio_targets(PORTFOLIO, vec![row("HGRU11", 100.0)], vec![], None)
             .await
             .unwrap();
 
@@ -425,7 +509,7 @@ mod tests {
         edited.current_quantity = Some(3.0);
         edited.notes = Some("Binance | Ledger".to_string());
         service
-            .save_portfolio_targets(PORTFOLIO, vec![edited], None)
+            .save_portfolio_targets(PORTFOLIO, vec![edited], vec![], None)
             .await
             .unwrap();
 
@@ -439,14 +523,138 @@ mod tests {
     async fn a_later_save_can_lower_a_target() {
         let (repo, service) = setup().await;
         service
-            .save_portfolio_targets(PORTFOLIO, vec![row("BTC", 60.0), row("ETH", 40.0)], None)
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 60.0), row("ETH", 40.0)],
+                vec![],
+                None,
+            )
             .await
             .unwrap();
         service
-            .save_portfolio_targets(PORTFOLIO, vec![row("BTC", 30.0), row("ETH", 70.0)], None)
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 30.0), row("ETH", 70.0)],
+                vec![],
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(repo.target_of("BTC").await, Some(30.0));
+    }
+
+    // --- removing positions ------------------------------------------------
+
+    fn position_ref(symbol: &str) -> PositionRef {
+        PositionRef {
+            symbol: symbol.to_string(),
+            group_name: Some("Core".to_string()),
+            barca: Some("Base".to_string()),
+            asset_class: "crypto".to_string(),
+        }
+    }
+
+    /// BTC holds 1, ETH holds `eth`.
+    async fn btc_and_eth(eth: f64) -> (Arc<SqliteRepo>, TargetsService) {
+        let (repo, service) = setup().await;
+        repo.append_ledger_entries(
+            PORTFOLIO,
+            &[entry("BTC", 1.0, None), entry("ETH", eth, None)],
+        )
+        .await
+        .unwrap();
+        (repo, service)
+    }
+
+    #[tokio::test]
+    async fn an_empty_position_can_be_removed_and_restored() {
+        let (repo, service) = btc_and_eth(0.0).await;
+        service
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 100.0)],
+                vec![position_ref("ETH")],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .list_positions(PORTFOLIO, false)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let all = service.list_positions(PORTFOLIO, true).await.unwrap();
+        assert!(all.iter().any(|p| p.symbol == "ETH" && p.removed));
+
+        let ledger_rows = repo.fetch_position_sources(PORTFOLIO).await.unwrap().len();
+        service
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 90.0), row("ETH", 10.0)],
+                vec![],
+                None,
+            )
+            .await
+            .unwrap();
+        let positions = service.list_positions(PORTFOLIO, false).await.unwrap();
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[1].target_percent, 10.0);
+        assert_eq!(
+            repo.fetch_position_sources(PORTFOLIO).await.unwrap().len(),
+            ledger_rows,
+            "restoring never appends a seed ledger row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_position_that_holds_something_cannot_be_removed() {
+        let (repo, service) = btc_and_eth(2.0).await;
+        let err = service
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 100.0)],
+                vec![position_ref("ETH")],
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, TargetsError::Invalid(_)), "{err:?}");
+        assert!(err.to_string().contains("Corrigir"), "{err}");
+        assert_eq!(repo.fetch_positions(PORTFOLIO).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_position_is_not_found() {
+        let (_, service) = btc_and_eth(0.0).await;
+        let err = service
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 100.0)],
+                vec![position_ref("SOL")],
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TargetsError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_position_cannot_be_both_kept_and_removed() {
+        let (_, service) = btc_and_eth(0.0).await;
+        let err = service
+            .save_portfolio_targets(
+                PORTFOLIO,
+                vec![row("BTC", 100.0), row("ETH", 0.0)],
+                vec![position_ref("ETH")],
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TargetsError::Invalid(_)), "{err:?}");
     }
 
     // --- correct_quantity --------------------------------------------------

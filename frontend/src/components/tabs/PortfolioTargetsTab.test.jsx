@@ -79,7 +79,7 @@ describe("PortfolioTargetsTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Save All" }));
 
-    const [btc, eth] = hook.save.mock.calls[0][0];
+    const [btc, eth] = hook.save.mock.calls[0][0].rows;
     expect(btc).toEqual({ symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 60 });
     expect(eth).not.toHaveProperty("current_quantity");
     expect(eth).not.toHaveProperty("notes");
@@ -104,27 +104,83 @@ describe("PortfolioTargetsTab", () => {
     }
   });
 
-  it("removing a row drops it from the table, the sum, and the saved payload", async () => {
+  it("removing an empty row marks it, takes it out of the sum, and sends it as a removal", async () => {
     const user = userEvent.setup();
-    const hook = setupHook();
+    const hook = setupHook({
+      rows: [
+        { symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 0, current_quantity: 0, notes: "", source_count: 1 },
+        { symbol: "ETH", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 100, current_quantity: 2, notes: "", source_count: 1 },
+      ],
+    });
     render(<PortfolioTargetsTab />);
 
     const btcRow = screen.getByDisplayValue("BTC").closest("tr");
     await user.click(within(btcRow).getByRole("button", { name: "Remove" }));
+    expect(within(btcRow).getByText("Removed on Save")).toBeInTheDocument();
+    expect(within(btcRow).getAllByRole("spinbutton")[0]).toBeDisabled();
+    expect(screen.getByText("Sum: 100.00%")).toBeInTheDocument();
 
-    expect(screen.queryByDisplayValue("BTC")).not.toBeInTheDocument();
-    expect(screen.getByText("Sum: 40.00%")).toBeInTheDocument(); // only ETH's 40 left
-    expect(screen.getByRole("button", { name: "Save All" })).toBeDisabled(); // no longer sums to 100
-
-    // Re-add ETH's missing 60% some other way isn't the point here — just
-    // confirm a save reflects the removal (single remaining row at 100%).
-    const ethRow = screen.getByDisplayValue("ETH").closest("tr");
-    const ethTarget = within(ethRow).getAllByRole("spinbutton")[0];
-    await user.clear(ethTarget);
-    await user.type(ethTarget, "100");
     await user.click(screen.getByRole("button", { name: "Save All" }));
+    const { rows, remove } = hook.save.mock.calls[0][0];
+    expect(rows.map((r) => r.symbol)).toEqual(["ETH"]);
+    expect(remove).toEqual([{ symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto" }]);
+  });
 
-    expect(hook.save).toHaveBeenCalledWith([expect.objectContaining({ symbol: "ETH", target_percent: 100 })]);
+  it("undo takes a row back before Save", async () => {
+    const user = userEvent.setup();
+    setupHook({
+      rows: [{ symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 100, current_quantity: 0, notes: "", source_count: 1 }],
+    });
+    render(<PortfolioTargetsTab />);
+
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    await user.click(within(btcRow).getByRole("button", { name: "Remove" }));
+    expect(screen.getByText("Sum: 0.00%")).toBeInTheDocument();
+    await user.click(within(btcRow).getByRole("button", { name: "Undo" }));
+    expect(screen.getByText("Sum: 100.00%")).toBeInTheDocument();
+  });
+
+  it("a row that still holds something can't be removed", () => {
+    setupHook();
+    render(<PortfolioTargetsTab />);
+    const btcRow = screen.getByDisplayValue("BTC").closest("tr");
+    expect(within(btcRow).getByRole("button", { name: "Remove" })).toBeDisabled();
+  });
+
+  it("removed rows are hidden until 'Show removed', and Restore brings one back on Save", async () => {
+    const user = userEvent.setup();
+    const hook = setupHook({
+      rows: [
+        { symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 100, current_quantity: 1, notes: "", source_count: 1 },
+        { symbol: "OLD", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 0, current_quantity: 0, notes: "", source_count: 1, removed: true },
+      ],
+    });
+    render(<PortfolioTargetsTab />);
+    expect(screen.queryByDisplayValue("OLD")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Show removed (1)" }));
+    const oldRow = screen.getByDisplayValue("OLD").closest("tr");
+    expect(within(oldRow).getByText("Removed")).toBeInTheDocument();
+    await user.click(within(oldRow).getByRole("button", { name: "Restore" }));
+    expect(within(oldRow).getByText("Restored on Save")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save All" }));
+    const { rows, remove } = hook.save.mock.calls[0][0];
+    expect(rows.map((r) => r.symbol)).toEqual(["BTC", "OLD"]);
+    expect(remove).toEqual([]);
+  });
+
+  it("a removed row left alone is neither saved nor removed again", async () => {
+    const user = userEvent.setup();
+    const hook = setupHook({
+      rows: [
+        { symbol: "BTC", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 100, current_quantity: 1, notes: "", source_count: 1 },
+        { symbol: "OLD", group_name: "Core", barca: "Base", asset_class: "crypto", target_percent: 0, current_quantity: 0, notes: "", source_count: 1, removed: true },
+      ],
+    });
+    render(<PortfolioTargetsTab />);
+    await user.click(screen.getByRole("button", { name: "Save All" }));
+    expect(hook.save.mock.calls[0][0]).toEqual({ rows: [expect.objectContaining({ symbol: "BTC" })], remove: [] });
   });
 
   it("corrects a single-source row's quantity via a dedicated endpoint, updating only that row", async () => {
@@ -289,7 +345,7 @@ describe("PortfolioTargetsTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Save All" }));
 
-    expect(hook.save).toHaveBeenCalledWith(
+    expect(hook.save.mock.calls[0][0].rows).toEqual(
       expect.arrayContaining([expect.objectContaining({ symbol: "HGRU11", current_quantity: 10, target_percent: 100 })])
     );
   });
@@ -410,7 +466,7 @@ describe("PortfolioTargetsTab", () => {
       await user.type(ethTarget, "0");
       await user.click(screen.getByRole("button", { name: "Save All" }));
 
-      const saved = Object.fromEntries(hook.save.mock.calls[0][0].map((r) => [r.symbol, r.target_percent]));
+      const saved = Object.fromEntries(hook.save.mock.calls[0][0].rows.map((r) => [r.symbol, r.target_percent]));
       expect(saved).toEqual({ BTC: 60, ETH: 0, ADA: 40 });
     });
 
@@ -422,12 +478,13 @@ describe("PortfolioTargetsTab", () => {
 
       expect(screen.getByText("Sum: 100.00%")).toBeInTheDocument();
       await user.click(screen.getByRole("button", { name: "Save All" }));
-      expect(hook.save.mock.calls[0][0].map((r) => r.symbol)).toEqual(["BTC", "ETH", "ADA"]);
+      expect(hook.save.mock.calls[0][0].rows.map((r) => r.symbol)).toEqual(["BTC", "ETH", "ADA"]);
     });
 
     it("removing a row while filtered removes that row, not another one", async () => {
       const user = userEvent.setup();
-      setupHook({ rows: threeRows });
+      const emptyAda = threeRows.map((r) => (r.symbol === "ADA" ? { ...r, current_quantity: 0 } : r));
+      setupHook({ rows: emptyAda });
       render(<PortfolioTargetsTab />);
       await user.type(screen.getByLabelText("Filter Symbol"), "ADA");
 
@@ -435,7 +492,8 @@ describe("PortfolioTargetsTab", () => {
       await user.click(within(adaRow).getByRole("button", { name: "Remove" }));
       await user.click(screen.getByRole("button", { name: "Clear" }));
 
-      expect(shownSymbols()).toEqual(["BTC", "ETH"]);
+      const marked = screen.getAllByText("Removed on Save").map((el) => within(el.closest("tr")).getAllByRole("textbox")[0].value);
+      expect(marked).toEqual(["ADA"]);
     });
 
     it("a new row stays visible at the bottom while filtered and sorted", async () => {

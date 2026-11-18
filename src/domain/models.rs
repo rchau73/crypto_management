@@ -72,7 +72,7 @@ impl AssetClass {
 /// Identifies one displayed portfolio row. Missing group/barca are stored
 /// as NULL in the ledger but compared as "" everywhere, matching the
 /// `COALESCE(..., '')` in the `wallet_allocations_current` view.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PositionKey {
     pub symbol: String,
     pub group_name: String,
@@ -121,6 +121,9 @@ pub struct WalletPosition {
     /// How many ledger sources were summed into `current_quantity`. Only a
     /// single-source position can have its quantity corrected directly.
     pub source_count: i64,
+    /// Removed by the manager (Portfolio Targets) and holding nothing.
+    #[serde(default)]
+    pub removed: bool,
 }
 
 impl WalletPosition {
@@ -583,6 +586,7 @@ mod tests {
             last_price: None,
             notes: None,
             source_count: 1,
+            removed: false,
         };
         let key = position.key();
         assert_eq!(key.group_name, "");

@@ -3,7 +3,8 @@ import { fetchPortfolioTargets, savePortfolioTargets } from "../api/client";
 import { useCurrentPortfolio } from "./useCurrentPortfolio";
 
 // Manager+ editable-table data for the Portfolio Targets tab, for the
-// current portfolio. Fetches when the tab mounts.
+// current portfolio, removed positions included (the tab can show them).
+// Fetches when the tab mounts.
 export function usePortfolioTargets() {
   const { id: portfolioId } = useCurrentPortfolio();
   const [rows, setRows] = useState([]);
@@ -14,7 +15,7 @@ export function usePortfolioTargets() {
     setLoading(true);
     setError("");
     try {
-      setRows(await fetchPortfolioTargets(portfolioId));
+      setRows(await fetchPortfolioTargets(portfolioId, { includeRemoved: true }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -27,8 +28,9 @@ export function usePortfolioTargets() {
   }, [refresh]);
 
   const save = useCallback(
-    async (nextRows) => {
-      await savePortfolioTargets(portfolioId, nextRows);
+    // `request` is { rows, remove } (see toSaveRequest).
+    async (request) => {
+      await savePortfolioTargets(portfolioId, request);
       await refresh();
     },
     [portfolioId, refresh]

@@ -4,11 +4,14 @@ import {
   ASSET_CLASS_HINTS,
   blankRow,
   canCorrectQuantity,
+  canRemove,
+  isKept,
   filterRows,
   parseNonNegative,
   quantityUnit,
   sortValue,
   toSavePayload,
+  toSaveRequest,
   uniqueSorted,
   validateRows,
 } from "./portfolioTargets";
@@ -155,5 +158,40 @@ describe("quantityUnit", () => {
 
   it("every asset class has a hint for the dropdown", () => {
     for (const c of ASSET_CLASSES) expect(ASSET_CLASS_HINTS[c]).toBeTruthy();
+  });
+});
+
+describe("removing and restoring", () => {
+  const row = (symbol, extra = {}) => ({ symbol, group_name: "Core", barca: "", asset_class: "crypto", target_percent: 0, current_quantity: 0, ...extra });
+
+  it("keeps active rows unless marked, and removed rows only when restored", () => {
+    expect(isKept(row("A"))).toBe(true);
+    expect(isKept(row("A", { markedForRemoval: true }))).toBe(false);
+    expect(isKept(row("A", { removed: true }))).toBe(false);
+    expect(isKept(row("A", { removed: true, markedForRestore: true }))).toBe(true);
+  });
+
+  it("only a row holding nothing, or a new one, can be removed", () => {
+    expect(canRemove(row("A"))).toBe(true);
+    expect(canRemove(row("A", { current_quantity: "0" }))).toBe(true);
+    expect(canRemove(row("A", { current_quantity: 0.5 }))).toBe(false);
+    expect(canRemove(row("A", { current_quantity: 5, isNew: true }))).toBe(true);
+  });
+
+  it("validates and sums only the kept rows", () => {
+    const rows = [row("A", { target_percent: 100 }), row("B", { target_percent: 50, markedForRemoval: true })];
+    expect(validateRows(rows)).toEqual({ sum: 100, isValid: true });
+  });
+
+  it("sends kept rows to save and marked ones to remove, never an untouched removed row", () => {
+    const request = toSaveRequest([
+      row("KEEP", { target_percent: 100 }),
+      row("DROP", { markedForRemoval: true }),
+      row("GONE", { removed: true }),
+      row("BACK", { removed: true, markedForRestore: true }),
+      row("NEW", { isNew: true, markedForRemoval: true }), // a new row is dropped, never "removed"
+    ]);
+    expect(request.rows.map((r) => r.symbol)).toEqual(["KEEP", "BACK"]);
+    expect(request.remove).toEqual([{ symbol: "DROP", group_name: "Core", barca: null, asset_class: "crypto" }]);
   });
 });

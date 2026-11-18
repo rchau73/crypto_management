@@ -167,16 +167,19 @@ export async function deleteUser(id) {
   return parseJsonOrThrow(res, "Failed to delete user");
 }
 
-export async function fetchPortfolioTargets(portfolioId) {
-  const res = await apiFetch(portfolioPath(portfolioId, "/targets"));
+// With `includeRemoved`, the removed positions come too (`removed: true`).
+export async function fetchPortfolioTargets(portfolioId, { includeRemoved = false } = {}) {
+  const res = await apiFetch(portfolioPath(portfolioId, includeRemoved ? "/targets?include_removed=true" : "/targets"));
   return parseJsonOrThrow(res, "Failed to fetch portfolio targets");
 }
 
 // Replaces the whole portfolio-targets table in one atomic save — `rows`
 // must be the complete desired state (every row, not a diff), and every
-// row's target_percent across the whole set must sum to 100%.
-export async function savePortfolioTargets(portfolioId, rows) {
-  const res = await putJson(portfolioPath(portfolioId, "/targets"), { rows });
+// row's target_percent across the whole set must sum to 100%. `remove`
+// lists positions to remove (each must hold nothing); a removed position
+// in `rows` is restored.
+export async function savePortfolioTargets(portfolioId, { rows, remove = [] }) {
+  const res = await putJson(portfolioPath(portfolioId, "/targets"), { rows, remove });
   return parseJsonOrThrow(res, "Failed to save portfolio targets");
 }
 

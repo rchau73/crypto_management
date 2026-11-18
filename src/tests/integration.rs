@@ -488,6 +488,84 @@ async fn a_new_brl_manual_position_shows_up_in_the_allocations_at_its_value() {
 }
 
 #[tokio::test]
+async fn an_emptied_position_can_be_removed_listed_and_comes_back_with_a_quantity() {
+    let app = default_app().await;
+    let manager = login(&app, "manager").await;
+    let eth =
+        json!({ "symbol": "ETH", "group_name": "Base", "barca": "Base", "asset_class": "crypto" });
+    let btc_only = json!([{ "symbol": "BTC", "group_name": "Base", "barca": "Base", "asset_class": "crypto", "target_percent": 100.0 }]);
+    let symbols = |rows: &Value| -> Vec<String> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // ETH still holds 2: refused, with the way out.
+    let (status, body) = send(
+        &app,
+        with_json(
+            "PUT",
+            "/api/portfolios/1/targets",
+            &manager,
+            json!({ "rows": btc_only, "remove": [eth] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("Corrigir"));
+
+    let mut empty = eth.clone();
+    empty["current_quantity"] = json!(0.0);
+    let (status, _) = send(
+        &app,
+        with_json("PUT", "/api/portfolios/1/targets/quantity", &manager, empty),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        &app,
+        with_json(
+            "PUT",
+            "/api/portfolios/1/targets",
+            &manager,
+            json!({ "rows": btc_only, "remove": [eth] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, listed) = send(&app, get("/api/portfolios/1/targets", &manager)).await;
+    assert_eq!(symbols(&listed), ["BTC"]);
+    let (_, with_removed) = send(
+        &app,
+        get("/api/portfolios/1/targets?include_removed=true", &manager),
+    )
+    .await;
+    assert_eq!(symbols(&with_removed), ["BTC", "ETH"]);
+    assert_eq!(with_removed[1]["removed"], true);
+    let (_, report) = send(&app, get("/api/portfolios/1/allocations", &manager)).await;
+    assert_eq!(symbols(&report["per_asset"]), ["BTC"]);
+
+    // Money lands on it again: it shows up by itself.
+    let mut refilled = eth.clone();
+    refilled["current_quantity"] = json!(1.0);
+    send(
+        &app,
+        with_json(
+            "PUT",
+            "/api/portfolios/1/targets/quantity",
+            &manager,
+            refilled,
+        ),
+    )
+    .await;
+    let (_, listed) = send(&app, get("/api/portfolios/1/targets", &manager)).await;
+    assert_eq!(symbols(&listed), ["BTC", "ETH"]);
+}
+
+#[tokio::test]
 async fn correcting_quantity_works_for_one_source_and_is_refused_for_several() {
     let app = default_app().await;
     let body = |symbol: &str, qty: f64| json!({ "symbol": symbol, "group_name": "Base", "barca": "Base", "asset_class": "crypto", "current_quantity": qty });
